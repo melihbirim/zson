@@ -148,16 +148,16 @@ zson covers the **filter-and-extract** use-case that jq is most commonly used fo
 
 ### Filtering
 
-| Task | jq | zson |
-|------|-----|------|
-| Exact match | `jq 'select(.status == "active")'` | `zson '{"status":"active"}'` |
-| Greater than | `jq 'select(.age > 30)'` | `zson '{"age":{"$gt":30}}'` |
-| Multiple conditions | `jq 'select(.age > 30 and .city == "NYC")'` | `zson '{"age":{"$gt":30},"city":"NYC"}'` |
-| OR conditions | `jq 'select(.city == "NYC" or .city == "LA")'` | `zson '{"$or":[{"city":"NYC"},{"city":"LA"}]}'` |
-| Field exists | `jq 'select(.email != null)'` | `zson '{"email":{"$exists":true}}'` |
-| Regex | `jq 'select(.name \| test("^Ali"; "i"))'` | `zson '{"name":{"$regex":"^Ali","$options":"i"}}'` |
-| Value in list | `jq 'select(.role == "admin" or .role == "editor")'` | `zson '{"role":{"$in":["admin","editor"]}}'` |
-| Negate | `jq 'select(.status != "error")'` | `zson '{"status":{"$ne":"error"}}'` |
+| Task                | jq                                                   | zson                                               |
+| ------------------- | ---------------------------------------------------- | -------------------------------------------------- |
+| Exact match         | `jq 'select(.status == "active")'`                   | `zson '{"status":"active"}'`                       |
+| Greater than        | `jq 'select(.age > 30)'`                             | `zson '{"age":{"$gt":30}}'`                        |
+| Multiple conditions | `jq 'select(.age > 30 and .city == "NYC")'`          | `zson '{"age":{"$gt":30},"city":"NYC"}'`           |
+| OR conditions       | `jq 'select(.city == "NYC" or .city == "LA")'`       | `zson '{"$or":[{"city":"NYC"},{"city":"LA"}]}'`    |
+| Field exists        | `jq 'select(.email != null)'`                        | `zson '{"email":{"$exists":true}}'`                |
+| Regex               | `jq 'select(.name \| test("^Ali"; "i"))'`            | `zson '{"name":{"$regex":"^Ali","$options":"i"}}'` |
+| Value in list       | `jq 'select(.role == "admin" or .role == "editor")'` | `zson '{"role":{"$in":["admin","editor"]}}'`       |
+| Negate              | `jq 'select(.status != "error")'`                    | `zson '{"status":{"$ne":"error"}}'`                |
 
 ### Field selection
 
