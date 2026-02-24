@@ -18,6 +18,10 @@ Thumbs.db
 test_*.csv
 *.tmp
 
+# Large benchmark data (>100MB, not suitable for git)
+bench/bench_data.ndjson
+bench/*.ndjson
+
 # Binaries
 sieswi
 *.exe
