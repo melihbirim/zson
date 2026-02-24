@@ -1,0 +1,8 @@
+{"id":1,"name":"Alice","age":30,"city":"NYC","active":true}
+{"id":2,"name":"Bob","age":35,"city":"LA","active":true}
+{"id":3,"name":"Charlie","age":28,"city":"Chicago","active":false}
+{"id":4,"name":"Diana","age":42,"city":"Houston","active":true}
+{"id":5,"name":"Eve","age":25,"city":"Phoenix","active":true}
+{"id":6,"name":"Frank","age":38,"city":"NYC","active":false}
+{"id":7,"name":"Grace","age":31,"city":"LA","active":true}
+{"id":8,"name":"Henry","age":29,"city":"Chicago","active":true}

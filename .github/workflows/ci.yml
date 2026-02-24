@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  lint:
+    name: Lint (zig fmt)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.15.2
+        uses: mlugg/setup-zig@v2
+        with:
+          version: "0.15.2"
+
+      - name: Check formatting
+        run: zig fmt --check src/ build.zig
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.15.2
+        uses: mlugg/setup-zig@v2
+        with:
+          version: "0.15.2"
+
+      - name: Run tests
+        run: zig build test
+
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.15.2
+        uses: mlugg/setup-zig@v2
+        with:
+          version: "0.15.2"
+
+      - name: Build (ReleaseFast)
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: zson-${{ matrix.os }}
+          path: zig-out/bin/zson
