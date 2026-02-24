@@ -134,12 +134,102 @@ Supported types: `string`, `number`, `bool`, `null`, `array`, `object`
 
 ## How It Works
 
-zson processes NDJSON files in parallel:
+zson processes files in parallel:
 
 1. **Memory-maps** the file — zero-copy reads
-2. **Splits** chunks at newline boundaries
-3. **Worker threads** parse and filter each chunk
-4. **Merges** results and writes in a single pass
+2. **Auto-detects** format: JSON array `[{...}]` or NDJSON (one object per line)
+3. **Splits** chunks at object/line boundaries
+4. **Worker threads** parse and filter each chunk independently
+5. **Merges** results and writes in a single pass
+
+## jq Comparison
+
+zson covers the **filter-and-extract** use-case that jq is most commonly used for, with a simpler query language and better performance on large files.
+
+### Filtering
+
+| Task | jq | zson |
+|------|-----|------|
+| Exact match | `jq 'select(.status == "active")'` | `zson '{"status":"active"}'` |
+| Greater than | `jq 'select(.age > 30)'` | `zson '{"age":{"$gt":30}}'` |
+| Multiple conditions | `jq 'select(.age > 30 and .city == "NYC")'` | `zson '{"age":{"$gt":30},"city":"NYC"}'` |
+| OR conditions | `jq 'select(.city == "NYC" or .city == "LA")'` | `zson '{"$or":[{"city":"NYC"},{"city":"LA"}]}'` |
+| Field exists | `jq 'select(.email != null)'` | `zson '{"email":{"$exists":true}}'` |
+| Regex | `jq 'select(.name \| test("^Ali"; "i"))'` | `zson '{"name":{"$regex":"^Ali","$options":"i"}}'` |
+| Value in list | `jq 'select(.role == "admin" or .role == "editor")'` | `zson '{"role":{"$in":["admin","editor"]}}'` |
+| Negate | `jq 'select(.status != "error")'` | `zson '{"status":{"$ne":"error"}}'` |
+
+### Field selection
+
+```bash
+# jq
+jq '{id, name, email}' users.ndjson
+
+# zson
+zson '{}' users.ndjson --select 'id,name,email'
+```
+
+### Counting
+
+```bash
+# jq
+jq 'select(.status == "error")' logs.ndjson | wc -l
+
+# zson (no extra process, no wc)
+zson '{"status":"error"}' logs.ndjson --count
+```
+
+### Output formats
+
+```bash
+# Pretty-printed JSON array
+jq -s '.' matches.ndjson
+zson '{}' matches.ndjson --output json --pretty
+
+# CSV
+jq -r '[.id,.name,.email] | @csv' users.ndjson
+zson '{}' users.ndjson --select 'id,name,email' --output csv
+```
+
+### What zson does not do
+
+jq is a full transformation language. zson is a query tool — it filters and extracts, not transforms. Use jq when you need to:
+
+- Reshape objects (`{newKey: .oldKey}`)
+- Arithmetic or string manipulation (`.price * 1.1`)
+- Aggregation (`group_by`, `reduce`)
+- Recursive descent (`..|`)
+
+For everything else — especially filtering large files — zson is faster and the query syntax is easier to read and write.
+
+### Real-world examples side by side
+
+```bash
+# Find all error logs from service "auth" in the last hour
+# jq
+jq 'select(.level == "error" and .service == "auth")' app.ndjson
+
+# zson
+zson '{"level":"error","service":"auth"}' app.ndjson
+
+# ─────────────────────────────────────────────────────────────
+
+# Find users aged 25–40 in NYC or LA, return only id and name
+# jq
+jq 'select(.age >= 25 and .age <= 40 and (.city == "NYC" or .city == "LA")) | {id, name}' users.ndjson
+
+# zson
+zson '{"age":{"$gte":25,"$lte":40},"$or":[{"city":"NYC"},{"city":"LA"}]}' users.ndjson --select 'id,name'
+
+# ─────────────────────────────────────────────────────────────
+
+# Count HTTP 5xx responses
+# jq
+jq 'select(.status >= 500 and .status < 600)' access.ndjson | wc -l
+
+# zson
+zson '{"status":{"$gte":500,"$lt":600}}' access.ndjson --count
+```
 
 ## License
 
