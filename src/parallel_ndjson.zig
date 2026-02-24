@@ -52,6 +52,84 @@ pub const Config = struct {
     chunk_size: usize = 1024 * 1024, // 1MB chunks
 };
 
+/// Input format: auto-detected from the first non-whitespace byte.
+pub const Format = enum { ndjson, json_array };
+
+/// Detect whether data is NDJSON (objects separated by newlines) or a JSON array ([...]).
+pub fn detectFormat(data: []const u8) Format {
+    for (data) |b| {
+        switch (b) {
+            ' ', '\t', '\n', '\r' => continue,
+            '[' => return .json_array,
+            else => break,
+        }
+    }
+    return .ndjson;
+}
+
+/// Convert a JSON array ([{...},{...},...]) to NDJSON (one object per line).
+/// Handles nested objects and strings correctly via a depth counter.
+/// Returns an owned slice; caller must free with allocator.free().
+pub fn jsonArrayToNdjson(data: []const u8, allocator: std.mem.Allocator) ![]u8 {
+    var out = std.ArrayList(u8){};
+    errdefer out.deinit(allocator);
+
+    var i: usize = 0;
+    const len = data.len;
+
+    // Skip to opening '['
+    while (i < len and data[i] != '[') : (i += 1) {}
+    if (i >= len) return out.toOwnedSlice(allocator);
+    i += 1;
+
+    while (i < len) {
+        // Skip whitespace and commas between objects
+        while (i < len) : (i += 1) {
+            const b = data[i];
+            if (b == ' ' or b == '\t' or b == '\n' or b == '\r' or b == ',') continue;
+            break;
+        }
+        if (i >= len or data[i] == ']') break;
+        if (data[i] != '{') {
+            i += 1;
+            continue;
+        }
+
+        // Extract one balanced {...} object
+        const start = i;
+        var depth: usize = 0;
+        var in_string = false;
+        while (i < len) : (i += 1) {
+            const b = data[i];
+            if (in_string) {
+                if (b == '\\') {
+                    i += 1; // skip escaped character
+                } else if (b == '"') {
+                    in_string = false;
+                }
+            } else {
+                switch (b) {
+                    '"' => in_string = true,
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if (depth == 0) {
+                            i += 1;
+                            break;
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+
+        try out.appendSlice(allocator, data[start..i]);
+        try out.append(allocator, '\n');
+    }
+
+    return out.toOwnedSlice(allocator);
+}
+
 /// Context passed to each worker thread
 const WorkerContext = struct {
     data: []const u8,
@@ -217,8 +295,16 @@ pub fn processFileCount(
     );
     defer std.posix.munmap(data);
 
+    // Normalise to NDJSON (JSON arrays are converted; NDJSON passes through untouched)
+    var ndjson_owned: ?[]u8 = null;
+    defer if (ndjson_owned) |d| allocator.free(d);
+    const ndjson: []const u8 = if (detectFormat(data) == .json_array) blk: {
+        ndjson_owned = try jsonArrayToNdjson(data, allocator);
+        break :blk ndjson_owned.?;
+    } else data;
+
     const num_threads = @min(config.num_threads, std.Thread.getCpuCount() catch 4);
-    const chunks = try splitIntoChunks(data, num_threads, allocator);
+    const chunks = try splitIntoChunks(ndjson, num_threads, allocator);
     defer allocator.free(chunks);
 
     var contexts = try allocator.alloc(CountWorkerContext, num_threads);
@@ -252,7 +338,7 @@ pub fn processFile(
     }
 
     // Memory-map the file for true zero-copy reading
-    const data = try std.posix.mmap(
+    const mmap_data = try std.posix.mmap(
         null,
         file_size,
         std.posix.PROT.READ,
@@ -260,6 +346,15 @@ pub fn processFile(
         file.handle,
         0,
     );
+
+    // Normalise to NDJSON. JSON arrays are converted (mmap freed immediately after);
+    // NDJSON passes through and the mmap is held alive via merged.mmap_data.
+    var ndjson_owned: ?[]u8 = null;
+    const data: []const u8 = if (detectFormat(mmap_data) == .json_array) blk: {
+        ndjson_owned = try jsonArrayToNdjson(mmap_data, allocator);
+        std.posix.munmap(mmap_data);
+        break :blk ndjson_owned.?;
+    } else mmap_data;
 
     // Use parallel processing
     const num_threads = @min(config.num_threads, std.Thread.getCpuCount() catch 4);
@@ -309,7 +404,11 @@ pub fn processFile(
 
     // Merge results from all threads
     var merged = ChunkResult.init(allocator);
-    merged.mmap_data = data; // Store mmap reference so slices remain valid
+    // Keep backing data alive as long as merged: mmap (NDJSON) or owned buf (JSON array)
+    if (ndjson_owned) |d|
+        merged.owned_data = d
+    else
+        merged.mmap_data = mmap_data;
 
     for (results) |*result| {
         merged.lines_processed += result.lines_processed;
@@ -329,11 +428,18 @@ pub fn processData(
     config: Config,
     allocator: std.mem.Allocator,
 ) !ChunkResult {
+    // Normalise to NDJSON (JSON arrays are converted; NDJSON passes through)
+    var ndjson_owned: ?[]u8 = null;
+    const ndjson: []const u8 = if (detectFormat(data) == .json_array) blk: {
+        ndjson_owned = try jsonArrayToNdjson(data, allocator);
+        break :blk ndjson_owned.?;
+    } else data;
+
     // Determine optimal number of threads
     const num_threads = @min(config.num_threads, std.Thread.getCpuCount() catch 4);
 
     // Split into chunks aligned on newline boundaries
-    const chunks = try splitIntoChunks(data, num_threads, allocator);
+    const chunks = try splitIntoChunks(ndjson, num_threads, allocator);
     defer allocator.free(chunks);
 
     // Create results for each thread
@@ -377,6 +483,8 @@ pub fn processData(
 
     // Merge results from all threads
     var merged = ChunkResult.init(allocator);
+    // If we converted a JSON array, the merged result owns the NDJSON buffer
+    if (ndjson_owned) |d| merged.owned_data = d;
 
     for (results) |*result| {
         merged.lines_processed += result.lines_processed;
@@ -423,11 +531,19 @@ pub fn processFileWithOutput(
     );
     defer std.posix.munmap(data);
 
+    // Normalise to NDJSON (JSON arrays are converted; NDJSON passes through untouched)
+    var ndjson_owned: ?[]u8 = null;
+    defer if (ndjson_owned) |d| allocator.free(d);
+    const ndjson: []const u8 = if (detectFormat(data) == .json_array) blk: {
+        ndjson_owned = try jsonArrayToNdjson(data, allocator);
+        break :blk ndjson_owned.?;
+    } else data;
+
     // Use parallel processing
     const num_threads = @min(config.num_threads, std.Thread.getCpuCount() catch 4);
 
     // Split into chunks aligned on newline boundaries
-    const chunks = try splitIntoChunks(data, num_threads, allocator);
+    const chunks = try splitIntoChunks(ndjson, num_threads, allocator);
     defer allocator.free(chunks);
 
     // Context for worker threads that generate output
@@ -598,4 +714,33 @@ test "parallel: chunk splitting" {
     for (chunks[0 .. chunks.len - 1]) |chunk| {
         try std.testing.expect(chunk[chunk.len - 1] == '\n');
     }
+}
+
+test "jsonArrayToNdjson: basic conversion" {
+    const allocator = std.testing.allocator;
+    const input = "[{\"name\": \"Alice\", \"age\": 30},{\"name\": \"Bob\", \"age\": 25}]";
+    const ndjson = try jsonArrayToNdjson(input, allocator);
+    defer allocator.free(ndjson);
+
+    // Should produce two lines
+    var lines = std.mem.splitScalar(u8, ndjson, '\n');
+    const line1 = lines.next() orelse "";
+    const line2 = lines.next() orelse "";
+    try std.testing.expect(std.mem.startsWith(u8, line1, "{"));
+    try std.testing.expect(std.mem.startsWith(u8, line2, "{"));
+}
+
+test "processData: JSON array input" {
+    const allocator = std.testing.allocator;
+
+    const data = "[{\"name\": \"Alice\", \"age\": 30},{\"name\": \"Bob\", \"age\": 25},{\"name\": \"Charlie\", \"age\": 35}]";
+    const query_str = "{\"age\": {\"$gte\": 30}}";
+
+    var filter = try query.parseQuery(query_str, allocator);
+    defer filter.deinit(allocator);
+
+    var result = try processData(data, &filter.filter, .{ .num_threads = 1 }, allocator);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), result.matches.items.len);
 }

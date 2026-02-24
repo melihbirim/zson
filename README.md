@@ -1,9 +1,14 @@
 # zson
 
-A fast command-line tool for querying NDJSON files using MongoDB query syntax.
+A fast command-line tool for querying JSON and NDJSON files using MongoDB query syntax.
+Both formats are detected automatically — no flags needed.
 
 ```bash
+# NDJSON (one object per line)
 zson '{ "age": { "$gt": 30 }, "city": "NYC" }' users.ndjson
+
+# JSON array  ([{...},{...}])
+zson '{ "age": { "$gt": 30 } }' users.json
 ```
 
 No custom DSL to learn — if you know MongoDB queries, you already know zson.
@@ -21,9 +26,9 @@ zig build -Doptimize=ReleaseFast
 
 ## Usage
 
-```
-zson [options] '<query>' <file.ndjson>
-       zson [options] '<query>' -          # read from stdin
+```bash
+zson [options] '<query>' <file>   # .ndjson or .json — auto-detected
+       zson [options] '<query>' -          # read from stdin (both formats)
 
 Options:
   --select <fields>   Comma-separated fields to include in output
@@ -38,8 +43,11 @@ Options:
 ### Examples
 
 ```bash
-# Filter by field value
+# Works with NDJSON files (one object per line)
 zson '{ "status": "active" }' records.ndjson
+
+# Works with JSON array files ([{...},{...}])
+zson '{ "status": "active" }' records.json
 
 # Numeric comparison
 zson '{ "age": { "$gt": 18, "$lt": 65 } }' users.ndjson
@@ -76,51 +84,52 @@ zson '{ "age": { "$gt": 50 } }' big.ndjson --threads 8
 
 ### Comparison
 
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `$eq` | Equal | `{ "status": { "$eq": "ok" } }` or `{ "status": "ok" }` |
-| `$ne` | Not equal | `{ "status": { "$ne": "error" } }` |
-| `$gt` | Greater than | `{ "age": { "$gt": 30 } }` |
-| `$gte` | Greater than or equal | `{ "score": { "$gte": 90 } }` |
-| `$lt` | Less than | `{ "price": { "$lt": 100 } }` |
-| `$lte` | Less than or equal | `{ "age": { "$lte": 65 } }` |
-| `$in` | Value in array | `{ "city": { "$in": ["NYC", "LA"] } }` |
-| `$nin` | Value not in array | `{ "role": { "$nin": ["guest"] } }` |
+| Operator | Description           | Example                                                 |
+| -------- | --------------------- | ------------------------------------------------------- |
+| `$eq`    | Equal                 | `{ "status": { "$eq": "ok" } }` or `{ "status": "ok" }` |
+| `$ne`    | Not equal             | `{ "status": { "$ne": "error" } }`                      |
+| `$gt`    | Greater than          | `{ "age": { "$gt": 30 } }`                              |
+| `$gte`   | Greater than or equal | `{ "score": { "$gte": 90 } }`                           |
+| `$lt`    | Less than             | `{ "price": { "$lt": 100 } }`                           |
+| `$lte`   | Less than or equal    | `{ "age": { "$lte": 65 } }`                             |
+| `$in`    | Value in array        | `{ "city": { "$in": ["NYC", "LA"] } }`                  |
+| `$nin`   | Value not in array    | `{ "role": { "$nin": ["guest"] } }`                     |
 
 ### Logical
 
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `$and` | All conditions true | `{ "$and": [{ "age": { "$gt": 18 } }, { "active": true }] }` |
-| `$or` | Any condition true | `{ "$or": [{ "city": "NYC" }, { "city": "LA" }] }` |
-| `$not` | Inverts condition | `{ "age": { "$not": { "$lt": 18 } } }` |
-| `$nor` | None of the conditions | `{ "$nor": [{ "status": "error" }, { "status": "banned" }] }` |
+| Operator | Description            | Example                                                       |
+| -------- | ---------------------- | ------------------------------------------------------------- |
+| `$and`   | All conditions true    | `{ "$and": [{ "age": { "$gt": 18 } }, { "active": true }] }`  |
+| `$or`    | Any condition true     | `{ "$or": [{ "city": "NYC" }, { "city": "LA" }] }`            |
+| `$not`   | Inverts condition      | `{ "age": { "$not": { "$lt": 18 } } }`                        |
+| `$nor`   | None of the conditions | `{ "$nor": [{ "status": "error" }, { "status": "banned" }] }` |
 
 Multiple conditions on the same field are implicitly `$and`:
+
 ```json
 { "age": { "$gt": 18, "$lt": 65 } }
 ```
 
 ### Element
 
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `$exists` | Field exists | `{ "email": { "$exists": true } }` |
-| `$type` | Field type check | `{ "age": { "$type": "number" } }` |
+| Operator  | Description      | Example                            |
+| --------- | ---------------- | ---------------------------------- |
+| `$exists` | Field exists     | `{ "email": { "$exists": true } }` |
+| `$type`   | Field type check | `{ "age": { "$type": "number" } }` |
 
 Supported types: `string`, `number`, `bool`, `null`, `array`, `object`
 
 ### Array
 
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `$size` | Array has exact length | `{ "tags": { "$size": 3 } }` |
+| Operator | Description            | Example                      |
+| -------- | ---------------------- | ---------------------------- |
+| `$size`  | Array has exact length | `{ "tags": { "$size": 3 } }` |
 
 ### String
 
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `$regex` | POSIX extended regex match | `{ "name": { "$regex": "^Ali" } }` |
+| Operator   | Description                          | Example                                            |
+| ---------- | ------------------------------------ | -------------------------------------------------- |
+| `$regex`   | POSIX extended regex match           | `{ "name": { "$regex": "^Ali" } }`                 |
 | `$options` | Regex flags (`i` = case-insensitive) | `{ "name": { "$regex": "ali", "$options": "i" } }` |
 
 ## How It Works
@@ -135,4 +144,3 @@ zson processes NDJSON files in parallel:
 ## License
 
 MIT
-

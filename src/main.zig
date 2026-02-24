@@ -116,7 +116,12 @@ fn processStdin(
     const data = try stdin_file.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024); // up to 4 GB
     const cfg = parallel.Config{ .num_threads = options.threads };
     var result = try parallel.processData(data, filter, cfg, allocator);
-    // Transfer ownership: data will be freed when result.deinit() is called
-    result.owned_data = data;
+    if (result.owned_data == null) {
+        // NDJSON: matched field slices point into data; transfer ownership to result
+        result.owned_data = data;
+    } else {
+        // JSON array: processData owns the converted NDJSON buffer; free original
+        allocator.free(data);
+    }
     return result;
 }
