@@ -15,7 +15,7 @@
 //! Usage: zig build bench-tokenizer -- bench/bench_data.ndjson [iterations]
 
 const std = @import("std");
-const simd = @import("simd");   // imported via build.zig module alias
+const simd = @import("simd"); // imported via build.zig module alias
 
 const MAX_TOKENS = 64 * 1024 * 1024; // 64 M tokens — enough for 1 M records × ~60 tokens each
 
@@ -50,13 +50,11 @@ pub fn main() !void {
     defer std.posix.munmap(data);
 
     std.debug.print("File loaded : {s}\n", .{filename});
-    std.debug.print("File size   : {d:.3} GB  ({d} bytes)\n",
-        .{ @as(f64, @floatFromInt(file_size)) / 1e9, file_size });
+    std.debug.print("File size   : {d:.3} GB  ({d} bytes)\n", .{ @as(f64, @floatFromInt(file_size)) / 1e9, file_size });
 
     // ── Allocate token buffer (reused across iterations) ──────────────────────
     const tokens = try alloc.alloc(simd.Token, MAX_TOKENS);
-    std.debug.print("Token buf   : {d:.1} MB  (max {d} tokens)\n\n",
-        .{ @as(f64, @floatFromInt(tokens.len * @sizeOf(simd.Token))) / 1e6, tokens.len });
+    std.debug.print("Token buf   : {d:.1} MB  (max {d} tokens)\n\n", .{ @as(f64, @floatFromInt(tokens.len * @sizeOf(simd.Token))) / 1e6, tokens.len });
 
     // ── Warm-up (1 pass, not timed) ───────────────────────────────────────────
     _ = simd.findJsonStructure(data, tokens);
@@ -82,9 +80,7 @@ pub fn main() !void {
 
         if (elapsed < best_secs) best_secs = elapsed;
 
-        std.debug.print("  iter {d:2}: {d:.4}s  tokens={d}  {d:.2} GB/s\n",
-            .{ iter + 1, elapsed, n,
-               @as(f64, @floatFromInt(file_size)) / 1e9 / elapsed });
+        std.debug.print("  iter {d:2}: {d:.4}s  tokens={d}  {d:.2} GB/s\n", .{ iter + 1, elapsed, n, @as(f64, @floatFromInt(file_size)) / 1e9 / elapsed });
     }
 
     const avg_secs = total_secs / @as(f64, @floatFromInt(iters));
@@ -98,15 +94,18 @@ pub fn main() !void {
         \\  best run      : {d:.4}s  →  {d:.2} GB/s
         \\  avg  run      : {d:.4}s  →  {d:.2} GB/s
         \\
-        , .{
-            tokens_per_iter,
-            best_secs, gb / best_secs,
-            avg_secs,  gb / avg_secs,
-        });
+    , .{
+        tokens_per_iter,
+        best_secs,
+        gb / best_secs,
+        avg_secs,
+        gb / avg_secs,
+    });
 
     // Machine-readable line for the comparison script (stdout)
     var out_buf: [256]u8 = undefined;
-    const out_line = try std.fmt.bufPrint(&out_buf,
+    const out_line = try std.fmt.bufPrint(
+        &out_buf,
         "zson_gb_per_sec={d:.2} zson_best_sec={d:.4} zson_tokens={d}\n",
         .{ gb / best_secs, best_secs, tokens_per_iter },
     );

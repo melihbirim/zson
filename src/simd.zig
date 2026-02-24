@@ -64,18 +64,18 @@ pub fn findJsonStructure(data: []const u8, tokens: []Token) usize {
         const chunk: Vec = data[i..][0..VecSize].*;
 
         // ── Stage 1: SIMD comparison ────────────────────────────────────────
-        const is_open_brace    = chunk == open_brace;
-        const is_close_brace   = chunk == close_brace;
-        const is_open_bracket  = chunk == open_bracket;
+        const is_open_brace = chunk == open_brace;
+        const is_close_brace = chunk == close_brace;
+        const is_open_bracket = chunk == open_bracket;
         const is_close_bracket = chunk == close_bracket;
-        const is_quote         = chunk == quote;
-        const is_colon         = chunk == colon;
-        const is_comma         = chunk == comma;
+        const is_quote = chunk == quote;
+        const is_colon = chunk == colon;
+        const is_comma = chunk == comma;
 
         // ── Stage 2: bitmask skip + per-match dispatch ──────────────────────
         // OR all match vectors → one bool per lane that says "any structural?"
         const is_any = is_open_brace | is_close_brace | is_open_bracket |
-                       is_close_bracket | is_quote | is_colon | is_comma;
+            is_close_bracket | is_quote | is_colon | is_comma;
 
         // One NEON/SSE OR-reduction — skip the entire chunk if nothing matched.
         // This is the common case for number/string value content.
@@ -88,13 +88,7 @@ pub fn findJsonStructure(data: []const u8, tokens: []Token) usize {
             if (!is_any[j]) continue; // skip non-structural byte (fast path)
 
             const tok_type: TokenType =
-                if (is_open_brace[j])    .open_brace
-                else if (is_close_brace[j])   .close_brace
-                else if (is_open_bracket[j])  .open_bracket
-                else if (is_close_bracket[j]) .close_bracket
-                else if (is_quote[j])         .quote
-                else if (is_colon[j])         .colon
-                else                          .comma;
+                if (is_open_brace[j]) .open_brace else if (is_close_brace[j]) .close_brace else if (is_open_bracket[j]) .open_bracket else if (is_close_bracket[j]) .close_bracket else if (is_quote[j]) .quote else if (is_colon[j]) .colon else .comma;
 
             tokens[count] = Token{ .type = tok_type, .pos = i + j };
             count += 1;
