@@ -45,35 +45,37 @@ pub fn main() !void {
         std.process.exit(1);
     };
 
-    // Process the input
-    var result = if (std.mem.eql(u8, file_path, "-")) blk: {
-        // Read from stdin
-        break :blk try processStdin(&parsed_query.filter, options, allocator);
-    } else blk: {
-        // For full output mode on files: use parallel output generation
-        if (!options.count_only) {
-            var output_buffer = try parallel.processFileWithOutput(
+    // ── file path: both sub-cases return early ───────────────────────────────
+    if (!std.mem.eql(u8, file_path, "-")) {
+        if (options.count_only) {
+            // Fast count-only path: no object materialisation, just atomic counters
+            const count = try parallel.processFileCount(
                 file_path,
                 &parsed_query.filter,
                 .{ .num_threads = options.threads },
-                options.select_fields,
                 allocator,
             );
-            defer output_buffer.deinit(allocator);
-
-            // Write entire output in single syscall (sieswi-style)
-            _ = try std.posix.write(std.posix.STDOUT_FILENO, output_buffer.items);
-            return; // Early return, output already written
+            var buf: [32]u8 = undefined;
+            const count_str = try std.fmt.bufPrint(&buf, "{d}\n", .{count});
+            _ = try std.posix.write(std.posix.STDOUT_FILENO, count_str);
+            return;
         }
 
-        // Count-only mode: use regular processing
-        break :blk try parallel.processFile(
+        // Full output mode: parallel generation + single syscall write
+        var output_buffer = try parallel.processFileWithOutput(
             file_path,
             &parsed_query.filter,
             .{ .num_threads = options.threads },
+            options.select_fields,
             allocator,
         );
-    };
+        defer output_buffer.deinit(allocator);
+        _ = try std.posix.write(std.posix.STDOUT_FILENO, output_buffer.items);
+        return;
+    }
+
+    // ── stdin path ────────────────────────────────────────────────────────────
+    var result = try processStdin(&parsed_query.filter, options, allocator);
     defer result.deinit();
 
     // Apply limit if specified

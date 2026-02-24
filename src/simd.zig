@@ -19,8 +19,29 @@ pub const Token = struct {
     pos: usize,
 };
 
-/// Find JSON structural characters using SIMD vectorization
-/// This is like findCommasSIMD from sieswi, but for multiple JSON chars
+/// Find JSON structural characters using SIMD vectorization.
+///
+/// ## Algorithm — bitmask extraction (simdjson-style)
+///
+/// Stage 1  (SIMD, vectorized):
+///   Compare all 16 bytes against each of the 7 structural chars simultaneously.
+///   OR the results into `is_any` — a `@Vector(16, bool)` that marks every
+///   position that holds a structural character.
+///
+/// Stage 2  (bitmask, skipping):
+///   `@reduce(.Or, is_any)` produces a single bool with one NEON/SSE instruction.
+///   If the chunk contains NO structural char we skip it instantly (the common
+///   case for long string values, numbers, whitespace).
+///
+///   Within non-empty chunks we still loop over 16 lanes, but each non-structural
+///   byte is dismissed by a single `if (!is_any[j]) continue` before touching
+///   the 7-condition type dispatch — so only actual structural chars pay the
+///   full type-detection cost.
+///
+/// Compared to the old "scalar inner loop":
+///   Old: 16 × 7 = 112 comparisons per chunk minimum.
+///   New: 1 SIMD OR-reduction to skip empty chunks; ~7 comparisons only for
+///        structural chars that actually exist in the chunk.
 pub fn findJsonStructure(data: []const u8, tokens: []Token) usize {
     var count: usize = 0;
 
@@ -42,41 +63,41 @@ pub fn findJsonStructure(data: []const u8, tokens: []Token) usize {
     while (i + VecSize <= data.len and count < tokens.len) : (i += VecSize) {
         const chunk: Vec = data[i..][0..VecSize].*;
 
-        // SIMD comparison for all structural chars at once!
-        const is_open_brace = chunk == open_brace;
-        const is_close_brace = chunk == close_brace;
-        const is_open_bracket = chunk == open_bracket;
+        // ── Stage 1: SIMD comparison ────────────────────────────────────────
+        const is_open_brace    = chunk == open_brace;
+        const is_close_brace   = chunk == close_brace;
+        const is_open_bracket  = chunk == open_bracket;
         const is_close_bracket = chunk == close_bracket;
-        const is_quote = chunk == quote;
-        const is_colon = chunk == colon;
-        const is_comma = chunk == comma;
+        const is_quote         = chunk == quote;
+        const is_colon         = chunk == colon;
+        const is_comma         = chunk == comma;
 
-        // Extract positions of matches
+        // ── Stage 2: bitmask skip + per-match dispatch ──────────────────────
+        // OR all match vectors → one bool per lane that says "any structural?"
+        const is_any = is_open_brace | is_close_brace | is_open_bracket |
+                       is_close_bracket | is_quote | is_colon | is_comma;
+
+        // One NEON/SSE OR-reduction — skip the entire chunk if nothing matched.
+        // This is the common case for number/string value content.
+        if (!@reduce(.Or, is_any)) continue;
+
+        // Extract positions of matches — only iterate over the 16 lanes, but
+        // skip non-structural bytes immediately before any further branching.
         var j: usize = 0;
         while (j < VecSize and count < tokens.len) : (j += 1) {
-            // Check each structural character type
-            if (is_open_brace[j]) {
-                tokens[count] = Token{ .type = .open_brace, .pos = i + j };
-                count += 1;
-            } else if (is_close_brace[j]) {
-                tokens[count] = Token{ .type = .close_brace, .pos = i + j };
-                count += 1;
-            } else if (is_open_bracket[j]) {
-                tokens[count] = Token{ .type = .open_bracket, .pos = i + j };
-                count += 1;
-            } else if (is_close_bracket[j]) {
-                tokens[count] = Token{ .type = .close_bracket, .pos = i + j };
-                count += 1;
-            } else if (is_quote[j]) {
-                tokens[count] = Token{ .type = .quote, .pos = i + j };
-                count += 1;
-            } else if (is_colon[j]) {
-                tokens[count] = Token{ .type = .colon, .pos = i + j };
-                count += 1;
-            } else if (is_comma[j]) {
-                tokens[count] = Token{ .type = .comma, .pos = i + j };
-                count += 1;
-            }
+            if (!is_any[j]) continue; // skip non-structural byte (fast path)
+
+            const tok_type: TokenType =
+                if (is_open_brace[j])    .open_brace
+                else if (is_close_brace[j])   .close_brace
+                else if (is_open_bracket[j])  .open_bracket
+                else if (is_close_bracket[j]) .close_bracket
+                else if (is_quote[j])         .quote
+                else if (is_colon[j])         .colon
+                else                          .comma;
+
+            tokens[count] = Token{ .type = tok_type, .pos = i + j };
+            count += 1;
         }
     }
 

@@ -22,6 +22,13 @@ test_*.csv
 bench/bench_data.ndjson
 bench/*.ndjson
 
+# Compiled benchmark binaries
+bench/simdjson_bench
+bench/tokenizer_bench
+bench/tokenizer_bench_cpp
+bench/_tmpgen
+bench/tmp_gen
+
 # Binaries
 sieswi
 *.exe

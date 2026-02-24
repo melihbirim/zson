@@ -134,6 +134,34 @@ pub fn build(b: *std.Build) void {
     const example_parallel_step = b.step("example-parallel", "Run parallel processing example");
     example_parallel_step.dependOn(&run_example_parallel.step);
 
+    // ── Tokenizer microbenchmark ─────────────────────────────────────────────
+    // Usage: zig build bench-tokenizer -- bench/bench_data.ndjson [iterations]
+    const simd_mod = b.addModule("simd", .{
+        .root_source_file = b.path("src/simd.zig"),
+        .target = target,
+        .optimize = b.option(
+            std.builtin.OptimizeMode,
+            "bench-optimize",
+            "Optimization level for bench-tokenizer (default: ReleaseFast)",
+        ) orelse .ReleaseFast,
+    });
+    const bench_tokenizer = b.addExecutable(.{
+        .name = "bench_tokenizer",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/tokenizer_bench.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "simd", .module = simd_mod },
+            },
+        }),
+    });
+    bench_tokenizer.linkLibC();
+    const run_bench_tokenizer = b.addRunArtifact(bench_tokenizer);
+    if (b.args) |args| run_bench_tokenizer.addArgs(args);
+    const bench_tokenizer_step = b.step("bench-tokenizer", "Run simd.zig tokenizer microbenchmark");
+    bench_tokenizer_step.dependOn(&run_bench_tokenizer.step);
+
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
     // set the releative field.

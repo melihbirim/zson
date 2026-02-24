@@ -144,6 +144,97 @@ fn splitIntoChunks(data: []const u8, num_chunks: usize, allocator: std.mem.Alloc
     return chunks;
 }
 
+/// Context for count-only worker (no allocations, just an atomic counter)
+const CountWorkerContext = struct {
+    data: []const u8,
+    filter: *const query.Filter,
+    count: std.atomic.Value(usize),
+
+    pub fn init(data: []const u8, filter: *const query.Filter) CountWorkerContext {
+        return .{
+            .data = data,
+            .filter = filter,
+            .count = std.atomic.Value(usize).init(0),
+        };
+    }
+};
+
+fn countWorkerThread(ctx: *CountWorkerContext) void {
+    const alloc = std.heap.c_allocator;
+    var local: usize = 0;
+    var line_start: usize = 0;
+
+    for (ctx.data, 0..) |byte, i| {
+        if (byte == '\n') {
+            const line = ctx.data[line_start..i];
+            if (line.len > 0) {
+                var obj = json_parser.parseObject(line, alloc) catch {
+                    line_start = i + 1;
+                    continue;
+                };
+                defer obj.deinit();
+                if (query.matches(&obj, ctx.filter)) local += 1;
+            }
+            line_start = i + 1;
+        }
+    }
+    // Handle last line without trailing newline
+    if (line_start < ctx.data.len) {
+        const line = ctx.data[line_start..];
+        if (line.len > 0) {
+            var obj = json_parser.parseObject(line, alloc) catch {
+                _ = ctx.count.fetchAdd(local, .monotonic);
+                return;
+            };
+            defer obj.deinit();
+            if (query.matches(&obj, ctx.filter)) local += 1;
+        }
+    }
+
+    _ = ctx.count.fetchAdd(local, .monotonic);
+}
+
+/// Count matching records without materialising any objects.
+/// Much faster than processFile() for --count mode.
+pub fn processFileCount(
+    file_path: []const u8,
+    filter: *const query.Filter,
+    config: Config,
+    allocator: std.mem.Allocator,
+) !usize {
+    const file = try std.fs.cwd().openFile(file_path, .{});
+    defer file.close();
+    const file_size = try file.getEndPos();
+    if (file_size == 0) return 0;
+
+    const data = try std.posix.mmap(
+        null,
+        file_size,
+        std.posix.PROT.READ,
+        .{ .TYPE = .PRIVATE },
+        file.handle,
+        0,
+    );
+    defer std.posix.munmap(data);
+
+    const num_threads = @min(config.num_threads, std.Thread.getCpuCount() catch 4);
+    const chunks = try splitIntoChunks(data, num_threads, allocator);
+    defer allocator.free(chunks);
+
+    var contexts = try allocator.alloc(CountWorkerContext, num_threads);
+    defer allocator.free(contexts);
+    for (0..num_threads) |i| contexts[i] = CountWorkerContext.init(chunks[i], filter);
+
+    var threads = try allocator.alloc(std.Thread, num_threads);
+    defer allocator.free(threads);
+    for (0..num_threads) |i| threads[i] = try std.Thread.spawn(.{}, countWorkerThread, .{&contexts[i]});
+    for (threads) |t| t.join();
+
+    var total: usize = 0;
+    for (contexts) |*ctx| total += ctx.count.load(.monotonic);
+    return total;
+}
+
 /// Process NDJSON file - reads file into memory to preserve slice validity
 pub fn processFile(
     file_path: []const u8,
