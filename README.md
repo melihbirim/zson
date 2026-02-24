@@ -1,169 +1,138 @@
 # zson
 
-**MongoDB queries for JSON/NDJSON files. Blazingly fast.**
-
-Query JSON data using MongoDB syntax with zero-copy, SIMD-accelerated, parallel processing.
-
-## Status
-
-✅ **Production-ready MVP** — 18x faster than jq, faster than DuckDB on JSON output
-
-## Why zson?
+A fast command-line tool for querying NDJSON files using MongoDB query syntax.
 
 ```bash
-# Simple, intuitive MongoDB syntax
-zson users.ndjson '{ age: { $gt: 30 }, city: "NYC" }' --select 'name,email'
-
-# No weird jq DSL to learn
-# Just use MongoDB queries you already know
+zson '{ "age": { "$gt": 30 }, "city": "NYC" }' users.ndjson
 ```
 
-## Performance
+No custom DSL to learn — if you know MongoDB queries, you already know zson.
 
-Built with the same architecture that made [sieswi](../sieswi-zig) 2.1x faster than DuckDB:
+## Install
 
-- **Memory-mapped I/O** - Zero-copy reads
-- **SIMD vectorization** - 5-10x faster parsing
-- **Lock-free parallelism** - Scale to all CPU cores
-- **Zero-allocation slicing** - Minimal memory overhead
-
-### Target Performance (1M rows, 100MB NDJSON)
-
-| Tool       | Time      | Speed      |
-| ---------- | --------- | ---------- |
-| jq         | ~3.0s     | 1x         |
-| jaq (Rust) | ~1.5s     | 2x         |
-| DuckDB     | ~0.6s     | 5x         |
-| **zson**   | **~0.3s** | **10x** ⚡ |
-
-## Installation
+Requires [Zig 0.15](https://ziglang.org/download/).
 
 ```bash
-# From source (requires Zig 0.11+)
-git clone https://github.com/yourusername/zson
+git clone https://github.com/melihbirim/zson
 cd zson
 zig build -Doptimize=ReleaseFast
-./zig-out/bin/zson --version
+# binary at: ./zig-out/bin/zson
 ```
 
 ## Usage
 
+```
+zson [options] '<query>' <file.ndjson>
+       zson [options] '<query>' -          # read from stdin
+
+Options:
+  --select <fields>   Comma-separated fields to include in output
+  --count             Print match count only
+  --limit <n>         Return at most n results
+  --threads <n>       Number of worker threads (default: 4)
+  --output <fmt>      Output format: ndjson (default), json, csv
+  --pretty            Pretty-print JSON output
+  --help              Show this help
+```
+
+### Examples
+
 ```bash
-# Basic filtering
-zson data.ndjson '{ status: "active" }'
+# Filter by field value
+zson '{ "status": "active" }' records.ndjson
 
-# Comparison operators
-zson data.ndjson '{ age: { $gt: 18, $lt: 65 } }'
+# Numeric comparison
+zson '{ "age": { "$gt": 18, "$lt": 65 } }' users.ndjson
 
-# Logical operators
-zson data.ndjson '{ $or: [{ city: "NYC" }, { city: "LA" }] }'
-
-# Array membership
-zson data.ndjson '{ tags: { $in: ["tech", "news"] } }'
-
-# Field projection
-zson data.ndjson '{ active: true }' --select 'id,name,email'
+# Select specific fields
+zson '{ "active": true }' users.ndjson --select 'id,name,email'
 
 # Count matches
-zson data.ndjson '{ status: 500 }' --count
+zson '{ "status": "error" }' logs.ndjson --count
 
-# Output formats
-zson data.ndjson '{ ... }' --output csv
-zson data.ndjson '{ ... }' --output json --pretty
+# Logical OR
+zson '{ "$or": [{ "city": "NYC" }, { "city": "LA" }] }' users.ndjson
+
+# Array membership
+zson '{ "role": { "$in": ["admin", "editor"] } }' users.ndjson
+
+# Regex match (POSIX extended, case-insensitive with $options)
+zson '{ "name": { "$regex": "^ali", "$options": "i" } }' users.ndjson
+
+# Output as JSON array
+zson '{ "score": { "$gte": 90 } }' results.ndjson --output json --pretty
+
+# Output as CSV
+zson '{ "active": true }' users.ndjson --select 'id,name,email' --output csv
+
+# Pipe from stdin
+cat large.ndjson | zson '{ "level": "error" }' -
+
+# Parallel with more threads
+zson '{ "age": { "$gt": 50 } }' big.ndjson --threads 8
 ```
 
-## MongoDB Query Operators
+## Query Operators
 
-**Comparison:**
+### Comparison
 
-- `$eq`, `$ne` - Equality / inequality
-- `$gt`, `$gte`, `$lt`, `$lte` - Numeric and string comparison
-- `$in`, `$nin` - Array membership (`{"city":{"$in":["NYC","LA"]}}`)
-- `$regex` - POSIX extended regex (`{"name":{"$regex":"^Ali"}}`)
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `$eq` | Equal | `{ "status": { "$eq": "ok" } }` or `{ "status": "ok" }` |
+| `$ne` | Not equal | `{ "status": { "$ne": "error" } }` |
+| `$gt` | Greater than | `{ "age": { "$gt": 30 } }` |
+| `$gte` | Greater than or equal | `{ "score": { "$gte": 90 } }` |
+| `$lt` | Less than | `{ "price": { "$lt": 100 } }` |
+| `$lte` | Less than or equal | `{ "age": { "$lte": 65 } }` |
+| `$in` | Value in array | `{ "city": { "$in": ["NYC", "LA"] } }` |
+| `$nin` | Value not in array | `{ "role": { "$nin": ["guest"] } }` |
 
-**Logical:**
+### Logical
 
-- `$and`, `$or`, `$not` - Boolean logic
-- Multiple operators on one field are implicitly `$and`: `{"age":{"$gt":18,"$lt":65}}`
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `$and` | All conditions true | `{ "$and": [{ "age": { "$gt": 18 } }, { "active": true }] }` |
+| `$or` | Any condition true | `{ "$or": [{ "city": "NYC" }, { "city": "LA" }] }` |
+| `$not` | Inverts condition | `{ "age": { "$not": { "$lt": 18 } } }` |
+| `$nor` | None of the conditions | `{ "$nor": [{ "status": "error" }, { "status": "banned" }] }` |
 
-**Other:**
-
-- `$exists` - Field existence check
-
-**Nested fields:**
-
-Use dot notation to query nested objects:
-
-```bash
-zson '{"address.city":"NYC"}' records.ndjson
-zson '{"user.age":{"$gt":30}}' records.ndjson
+Multiple conditions on the same field are implicitly `$and`:
+```json
+{ "age": { "$gt": 18, "$lt": 65 } }
 ```
 
-## Roadmap
+### Element
 
-- [x] Project setup
-- [x] SIMD JSON tokenizer
-- [x] Zero-copy JSON parser
-- [x] MongoDB query parser
-- [x] Parallel NDJSON engine
-- [x] Benchmarks vs jq/jaq/DuckDB
-- [x] MVP Release
-- [x] Parallel output serialization (zson now faster than DuckDB on JSON output)
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `$exists` | Field exists | `{ "email": { "$exists": true } }` |
+| `$type` | Field type check | `{ "age": { "$type": "number" } }` |
 
-**Future (V2):**
+Supported types: `string`, `number`, `bool`, `null`, `array`, `object`
 
-- Nested field access: `user.address.city`
-- Regular expressions: `$regex`
-- Aggregation pipeline: `$group`, `$project`, `$sort`
-- JSON array support (currently NDJSON only)
+### Array
 
-## Remaining Optimizations
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `$size` | Array has exact length | `{ "tags": { "$size": 3 } }` |
 
-| Optimization               | Potential Gain              | Notes                                                         |
-| -------------------------- | --------------------------- | ------------------------------------------------------------- |
-| **SIMD JSON parsing**      | 2-3x faster COUNT queries   | Vectorized structural character detection (simdjson approach) |
-| **Custom arena allocator** | 10-20% improvement          | Per-thread arenas with bulk deallocation                      |
-| **Lazy field parsing**     | 20-30% on selective queries | Skip fields not referenced in WHERE/SELECT                    |
+### String
 
-## Architecture
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `$regex` | POSIX extended regex match | `{ "name": { "$regex": "^Ali" } }` |
+| `$options` | Regex flags (`i` = case-insensitive) | `{ "name": { "$regex": "ali", "$options": "i" } }` |
 
-zson processes NDJSON files in parallel by:
+## How It Works
 
-1. **Memory-mapping** the entire file (zero-copy)
-2. **Splitting** into chunks at line boundaries
-3. **Spawning** worker threads (one per CPU core)
-4. **Parsing** each line with SIMD-accelerated JSON tokenization
-5. **Filtering** rows against MongoDB query (zero-allocation)
-6. **Merging** results lock-free
+zson processes NDJSON files in parallel:
 
-See [ZSON_PROJECT_PLAN.md](ZSON_PROJECT_PLAN.md) for full technical details.
-
-## Benchmarking
-
-```bash
-# Generate test data (1M rows)
-zig build benchmark
-./bench/generate_data 1000000 > test.ndjson
-
-# Run benchmarks
-./bench/compare_all.sh test.ndjson '{ age: { $gt: 30 } }'
-```
-
-## Contributing
-
-We're in early development! Check [ZSON_PROJECT_PLAN.md](ZSON_PROJECT_PLAN.md) for the implementation roadmap.
+1. **Memory-maps** the file — zero-copy reads
+2. **Splits** chunks at newline boundaries
+3. **Worker threads** parse and filter each chunk
+4. **Merges** results and writes in a single pass
 
 ## License
 
 MIT
 
-## Inspiration
-
-- [sieswi](../sieswi-zig) - Our CSV engine (2.1x faster than DuckDB)
-- [jq](https://stedolan.github.io/jq/) - The JSON processor everyone knows
-- [simdjson](https://github.com/simdjson/simdjson) - SIMD JSON parsing techniques
-- [MongoDB](https://www.mongodb.com/) - Query syntax inspiration
-
----
-
-**Built with Zig. Made for speed.** ⚡

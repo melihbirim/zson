@@ -112,28 +112,11 @@ fn processStdin(
     options: cli.CliOptions,
     allocator: std.mem.Allocator,
 ) !parallel.ChunkResult {
-    // Read all of stdin into memory
-    // Note: For now, return empty result. Stdin processing needs buffered I/O.
-    _ = filter;
-    _ = options;
-    return parallel.ChunkResult.init(allocator);
-}
-
-test "simple test" {
-    const gpa = std.testing.allocator;
-    var list: std.ArrayList(i32) = .empty;
-    defer list.deinit(gpa); // Try commenting this out and see if zig detects the memory leak!
-    try list.append(gpa, 42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
-}
-
-test "fuzz example" {
-    const Context = struct {
-        fn testOne(context: @This(), input: []const u8) anyerror!void {
-            _ = context;
-            // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
-            try std.testing.expect(!std.mem.eql(u8, "canyoufindme", input));
-        }
-    };
-    try std.testing.fuzz(Context{}, Context.testOne, .{});
+    const stdin_file = std.fs.File{ .handle = std.posix.STDIN_FILENO };
+    const data = try stdin_file.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024); // up to 4 GB
+    const cfg = parallel.Config{ .num_threads = options.threads };
+    var result = try parallel.processData(data, filter, cfg, allocator);
+    // Transfer ownership: data will be freed when result.deinit() is called
+    result.owned_data = data;
+    return result;
 }
