@@ -19,36 +19,23 @@ pub const Token = struct {
     pos: usize,
 };
 
-/// Find JSON structural characters using SIMD vectorization.
+/// Generic SIMD structural-character scanner.
 ///
-/// ## Algorithm — bitmask extraction (simdjson-style)
+/// `chunk_size` controls how many bytes are processed per SIMD iteration.
+/// On aarch64 the native NEON register is 16 bytes; larger values make the
+/// compiler emit multiple NEON operations per loop iteration, reducing
+/// branch / loop overhead at the cost of more register pressure.
 ///
-/// Stage 1  (SIMD, vectorized):
-///   Compare all 16 bytes against each of the 7 structural chars simultaneously.
-///   OR the results into `is_any` — a `@Vector(16, bool)` that marks every
-///   position that holds a structural character.
+/// Practical sweet-spots to try: 16, 32, 64, 128.
 ///
-/// Stage 2  (bitmask, skipping):
-///   `@reduce(.Or, is_any)` produces a single bool with one NEON/SSE instruction.
-///   If the chunk contains NO structural char we skip it instantly (the common
-///   case for long string values, numbers, whitespace).
-///
-///   Within non-empty chunks we still loop over 16 lanes, but each non-structural
-///   byte is dismissed by a single `if (!is_any[j]) continue` before touching
-///   the 7-condition type dispatch — so only actual structural chars pay the
-///   full type-detection cost.
-///
-/// Compared to the old "scalar inner loop":
-///   Old: 16 × 7 = 112 comparisons per chunk minimum.
-///   New: 1 SIMD OR-reduction to skip empty chunks; ~7 comparisons only for
-///        structural chars that actually exist in the chunk.
-pub fn findJsonStructure(data: []const u8, tokens: []Token) usize {
+/// ## Algorithm
+/// Stage 1 – compare `chunk_size` bytes against each of the 7 structural chars.
+/// Stage 2 – `@reduce(.Or, is_any)` skips the chunk entirely when empty.
+///           Per non-empty lane: `is_any[j]` guard before 7-way type dispatch.
+pub fn findJsonStructureN(comptime chunk_size: usize, data: []const u8, tokens: []Token) usize {
     var count: usize = 0;
 
-    const VecSize = 16; // SSE/NEON vector size
-    const Vec = @Vector(VecSize, u8);
-
-    // Prepare comparison vectors for all structural characters
+    const Vec = @Vector(chunk_size, u8);
     const open_brace: Vec = @splat('{');
     const close_brace: Vec = @splat('}');
     const open_bracket: Vec = @splat('[');
@@ -58,12 +45,9 @@ pub fn findJsonStructure(data: []const u8, tokens: []Token) usize {
     const comma: Vec = @splat(',');
 
     var i: usize = 0;
+    while (i + chunk_size <= data.len and count < tokens.len) : (i += chunk_size) {
+        const chunk: Vec = data[i..][0..chunk_size].*;
 
-    // Process 16 bytes at a time with SIMD
-    while (i + VecSize <= data.len and count < tokens.len) : (i += VecSize) {
-        const chunk: Vec = data[i..][0..VecSize].*;
-
-        // ── Stage 1: SIMD comparison ────────────────────────────────────────
         const is_open_brace = chunk == open_brace;
         const is_close_brace = chunk == close_brace;
         const is_open_bracket = chunk == open_bracket;
@@ -72,24 +56,16 @@ pub fn findJsonStructure(data: []const u8, tokens: []Token) usize {
         const is_colon = chunk == colon;
         const is_comma = chunk == comma;
 
-        // ── Stage 2: bitmask skip + per-match dispatch ──────────────────────
-        // OR all match vectors → one bool per lane that says "any structural?"
         const is_any = is_open_brace | is_close_brace | is_open_bracket |
             is_close_bracket | is_quote | is_colon | is_comma;
 
-        // One NEON/SSE OR-reduction — skip the entire chunk if nothing matched.
-        // This is the common case for number/string value content.
         if (!@reduce(.Or, is_any)) continue;
 
-        // Extract positions of matches — only iterate over the 16 lanes, but
-        // skip non-structural bytes immediately before any further branching.
         var j: usize = 0;
-        while (j < VecSize and count < tokens.len) : (j += 1) {
-            if (!is_any[j]) continue; // skip non-structural byte (fast path)
-
+        while (j < chunk_size and count < tokens.len) : (j += 1) {
+            if (!is_any[j]) continue;
             const tok_type: TokenType =
                 if (is_open_brace[j]) .open_brace else if (is_close_brace[j]) .close_brace else if (is_open_bracket[j]) .open_bracket else if (is_close_bracket[j]) .close_bracket else if (is_quote[j]) .quote else if (is_colon[j]) .colon else .comma;
-
             tokens[count] = Token{ .type = tok_type, .pos = i + j };
             count += 1;
         }
@@ -113,6 +89,12 @@ pub fn findJsonStructure(data: []const u8, tokens: []Token) usize {
     }
 
     return count;
+}
+
+/// Find JSON structural characters — default 16-byte chunk (one NEON register).
+/// Call `findJsonStructureN(32, ...)` etc. to experiment with wider chunks.
+pub fn findJsonStructure(data: []const u8, tokens: []Token) usize {
+    return findJsonStructureN(16, data, tokens);
 }
 
 /// Fast SIMD-optimized newline search (same as sieswi)
