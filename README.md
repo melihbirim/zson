@@ -15,8 +15,13 @@ No custom DSL to learn — if you know MongoDB queries, you already know zson.
 
 ## Install
 
-Requires [Zig 0.15](https://ziglang.org/download/).
+**Homebrew (macOS / Linux):**
+```bash
+brew tap melihbirim/zson
+brew install zson
+```
 
+**From source** (requires [Zig 0.15](https://ziglang.org/download/)):
 ```bash
 git clone https://github.com/melihbirim/zson
 cd zson
