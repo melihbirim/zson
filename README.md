@@ -30,16 +30,30 @@ brew tap melihbirim/zson
 brew install zson
 ```
 
-**From source** (requires [Zig 0.15](https://ziglang.org/download/)):
+**Linux from source** (requires [Zig 0.15](https://ziglang.org/download/)):
 
 ```bash
 git clone https://github.com/melihbirim/zson
 cd zson
 zig build -Doptimize=ReleaseFast
 # binary at: ./zig-out/bin/zson
+sudo install -m 755 ./zig-out/bin/zson /usr/local/bin/zson
+```
 
-# Cross-compile for Windows
+**Windows from source** (requires [Zig 0.15](https://ziglang.org/download/)):
+
+```powershell
+git clone https://github.com/melihbirim/zson
+cd zson
+zig build -Doptimize=ReleaseFast
+# binary at: .\zig-out\bin\zson.exe
+```
+
+**Cross-compile Windows from macOS / Linux:**
+
+```bash
 zig build windows -Doptimize=ReleaseFast
+# binary at: ./zig-out/bin/zson.exe
 ```
 
 ## Usage
