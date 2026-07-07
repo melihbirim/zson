@@ -24,6 +24,29 @@ pub fn build(b: *std.Build) void {
     exe.linkLibC();
     b.installArtifact(exe);
 
+    const windows_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .windows,
+        .abi = .gnu,
+    });
+    const windows_mod = b.addModule("zson-windows", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = windows_target,
+    });
+    const windows_exe = b.addExecutable(.{
+        .name = "zson",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = windows_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zson", .module = windows_mod },
+            },
+        }),
+    });
+    windows_exe.linkLibC();
+    b.step("windows", "Build zson for Windows x86_64").dependOn(&windows_exe.step);
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);

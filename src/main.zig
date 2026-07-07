@@ -58,7 +58,7 @@ pub fn main() !void {
             );
             var buf: [32]u8 = undefined;
             const count_str = try std.fmt.bufPrint(&buf, "{d}\n", .{count});
-            _ = try std.posix.write(std.posix.STDOUT_FILENO, count_str);
+            try writeStdout(count_str);
             return;
         }
 
@@ -72,7 +72,7 @@ pub fn main() !void {
                 allocator,
             );
             defer output_buffer.deinit(allocator);
-            _ = try std.posix.write(std.posix.STDOUT_FILENO, output_buffer.items);
+            try writeStdout(output_buffer.items);
             return;
         }
 
@@ -114,7 +114,7 @@ fn writeResults(
     if (options.count_only) {
         var buf: [32]u8 = undefined;
         const count_str = try std.fmt.bufPrint(&buf, "{d}\n", .{objects.len});
-        _ = try std.posix.write(std.posix.STDOUT_FILENO, count_str);
+        try writeStdout(count_str);
         return;
     }
 
@@ -128,7 +128,11 @@ fn writeResults(
         .csv => try output.writeCsv(writer, objects, options.select_fields),
     }
 
-    _ = try std.posix.write(std.posix.STDOUT_FILENO, output_buf.items);
+    try writeStdout(output_buf.items);
+}
+
+fn writeStdout(bytes: []const u8) !void {
+    try std.fs.File.stdout().writeAll(bytes);
 }
 
 fn processStdin(
@@ -136,7 +140,7 @@ fn processStdin(
     options: cli.CliOptions,
     allocator: std.mem.Allocator,
 ) !parallel.ChunkResult {
-    const stdin_file = std.fs.File{ .handle = std.posix.STDIN_FILENO };
+    const stdin_file = std.fs.File.stdin();
     const data = try stdin_file.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024); // up to 4 GB
     const cfg = parallel.Config{ .num_threads = options.threads };
     var result = try parallel.processData(data, filter, cfg, allocator);

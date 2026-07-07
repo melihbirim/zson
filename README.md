@@ -29,6 +29,9 @@ git clone https://github.com/melihbirim/zson
 cd zson
 zig build -Doptimize=ReleaseFast
 # binary at: ./zig-out/bin/zson
+
+# Cross-compile for Windows
+zig build windows -Doptimize=ReleaseFast
 ```
 
 ## Usage
@@ -71,7 +74,7 @@ zson '{ "$or": [{ "city": "NYC" }, { "city": "LA" }] }' users.ndjson
 # Array membership
 zson '{ "role": { "$in": ["admin", "editor"] } }' users.ndjson
 
-# Regex match (POSIX extended, case-insensitive with $options)
+# Regex match (supports ^, $, ., *, and case-insensitive $options)
 zson '{ "name": { "$regex": "^ali", "$options": "i" } }' users.ndjson
 
 # Output as JSON array
@@ -136,7 +139,7 @@ Supported types: `string`, `number`, `bool`, `null`, `array`, `object`
 
 | Operator   | Description                          | Example                                            |
 | ---------- | ------------------------------------ | -------------------------------------------------- |
-| `$regex`   | POSIX extended regex match           | `{ "name": { "$regex": "^Ali" } }`                 |
+| `$regex`   | Regex match (`^`, `$`, `.`, `*`)     | `{ "name": { "$regex": "^Ali" } }`                 |
 | `$options` | Regex flags (`i` = case-insensitive) | `{ "name": { "$regex": "ali", "$options": "i" } }` |
 
 ## How It Works

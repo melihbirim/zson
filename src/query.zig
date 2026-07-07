@@ -1,9 +1,6 @@
 const std = @import("std");
 const json_parser = @import("json_parser.zig");
 const Allocator = std.mem.Allocator;
-const c = @cImport({
-    @cInclude("regex.h");
-});
 
 /// Query parsing errors
 pub const QueryError = error{
@@ -125,11 +122,8 @@ pub const RegexMatch = struct {
     field: []const u8,
     pattern: []const u8,
     options: []const u8, // e.g. "i" for case-insensitive
-    compiled: *c.regex_t,
 
     pub fn deinit(self: *RegexMatch, allocator: Allocator) void {
-        c.regfree(self.compiled);
-        allocator.destroy(self.compiled);
         allocator.free(self.field);
         allocator.free(self.pattern);
         allocator.free(self.options);
@@ -286,18 +280,10 @@ fn parseFieldFilter(key: []const u8, value: json_parser.JsonValue, allocator: Al
 
 /// Build a RegexMatch filter with optional flags (e.g. "i" for case-insensitive)
 fn buildRegexFilter(key: []const u8, pattern: []const u8, options: []const u8, allocator: Allocator) !Filter {
-    const pat_z = try allocator.dupeZ(u8, pattern);
-    defer allocator.free(pat_z);
-    const compiled = try allocator.create(c.regex_t);
-    errdefer allocator.destroy(compiled);
-    var flags: c_int = c.REG_EXTENDED;
-    if (std.mem.indexOfScalar(u8, options, 'i') != null) flags |= c.REG_ICASE;
-    if (c.regcomp(compiled, pat_z.ptr, flags) != 0) return error.InvalidOperator;
     return Filter{ .regex_match = RegexMatch{
         .field = try allocator.dupe(u8, key),
         .pattern = try allocator.dupe(u8, pattern),
         .options = try allocator.dupe(u8, options),
-        .compiled = compiled,
     } };
 }
 
@@ -553,18 +539,50 @@ fn getNestedValue(obj: json_parser.JsonObject, field_path: []const u8) ?json_par
     };
 }
 
-/// Match POSIX extended regex against a string field
+/// Match a small, portable regex subset: ^, $, ., and *.
 fn matchesRegex(obj: *json_parser.JsonObject, rm: *const RegexMatch) bool {
     const field_value = getNestedValue(obj.*, rm.field) orelse return false;
     if (field_value != .string) return false;
-    const str = field_value.string;
-    // Stack buffer for null-terminated copy (regex requires C string)
-    var buf: [4096]u8 = undefined;
-    if (str.len >= buf.len) return false;
-    @memcpy(buf[0..str.len], str);
-    buf[str.len] = 0;
-    var match: c.regmatch_t = undefined;
-    return c.regexec(rm.compiled, &buf, 1, &match, 0) == 0;
+    return regexMatches(field_value.string, rm.pattern, std.mem.indexOfScalar(u8, rm.options, 'i') != null);
+}
+
+fn regexMatches(text: []const u8, pattern: []const u8, case_insensitive: bool) bool {
+    if (pattern.len > 0 and pattern[0] == '^') {
+        return matchHere(pattern[1..], text, case_insensitive);
+    }
+
+    for (0..text.len + 1) |i| {
+        if (matchHere(pattern, text[i..], case_insensitive)) return true;
+    }
+    return false;
+}
+
+fn matchHere(pattern: []const u8, text: []const u8, case_insensitive: bool) bool {
+    if (pattern.len == 0) return true;
+    if (std.mem.eql(u8, pattern, "$")) return text.len == 0;
+    if (pattern.len >= 2 and pattern[1] == '*') {
+        return matchStar(pattern[0], pattern[2..], text, case_insensitive);
+    }
+    if (text.len > 0 and charMatches(pattern[0], text[0], case_insensitive)) {
+        return matchHere(pattern[1..], text[1..], case_insensitive);
+    }
+    return false;
+}
+
+fn matchStar(c: u8, pattern: []const u8, text: []const u8, case_insensitive: bool) bool {
+    var i: usize = 0;
+    while (true) : (i += 1) {
+        if (matchHere(pattern, text[i..], case_insensitive)) return true;
+        if (i >= text.len or !charMatches(c, text[i], case_insensitive)) return false;
+    }
+}
+
+fn charMatches(pattern_char: u8, text_char: u8, case_insensitive: bool) bool {
+    if (pattern_char == '.') return true;
+    if (case_insensitive) {
+        return std.ascii.toLower(pattern_char) == std.ascii.toLower(text_char);
+    }
+    return pattern_char == text_char;
 }
 
 /// Check if two values are equal

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const json_parser = @import("json_parser.zig");
 const query = @import("query.zig");
 const simd = @import("simd.zig");
@@ -8,7 +9,7 @@ pub const ChunkResult = struct {
     matches: std.ArrayList(json_parser.JsonObject),
     lines_processed: usize,
     allocator: std.mem.Allocator,
-    mmap_data: ?[]align(16384) const u8, // Memory-mapped data (needs munmap, not free)
+    mmap_data: ?[]align(std.heap.page_size_min) const u8, // Memory-mapped data (needs munmap, not free)
     owned_data: ?[]u8, // Allocated data (needs free)
     output_buffer: ?std.ArrayList(u8), // Pre-serialized output for parallel generation
 
@@ -36,7 +37,7 @@ pub const ChunkResult = struct {
 
         // Unmap memory-mapped data
         if (self.mmap_data) |data| {
-            std.posix.munmap(data);
+            if (builtin.os.tag != .windows) std.posix.munmap(data);
         }
 
         // Free owned data
@@ -48,7 +49,7 @@ pub const ChunkResult = struct {
 
 /// Configuration for parallel processing
 pub const Config = struct {
-    num_threads: usize = 7,
+    num_threads: usize = 4,
     chunk_size: usize = 1024 * 1024, // 1MB chunks
 };
 
@@ -285,15 +286,18 @@ pub fn processFileCount(
     const file_size = try file.getEndPos();
     if (file_size == 0) return 0;
 
-    const data = try std.posix.mmap(
-        null,
-        file_size,
-        std.posix.PROT.READ,
-        .{ .TYPE = .PRIVATE },
-        file.handle,
-        0,
-    );
-    defer std.posix.munmap(data);
+    const data = if (builtin.os.tag == .windows)
+        try file.readToEndAlloc(allocator, file_size)
+    else
+        try std.posix.mmap(
+            null,
+            file_size,
+            std.posix.PROT.READ,
+            .{ .TYPE = .PRIVATE },
+            file.handle,
+            0,
+        );
+    defer if (builtin.os.tag == .windows) allocator.free(data) else std.posix.munmap(data);
 
     // Normalise to NDJSON (JSON arrays are converted; NDJSON passes through untouched)
     var ndjson_owned: ?[]u8 = null;
@@ -337,24 +341,26 @@ pub fn processFile(
         return ChunkResult.init(allocator);
     }
 
-    // Memory-map the file for true zero-copy reading
-    const mmap_data = try std.posix.mmap(
-        null,
-        file_size,
-        std.posix.PROT.READ,
-        .{ .TYPE = .PRIVATE },
-        file.handle,
-        0,
-    );
+    const file_data = if (builtin.os.tag == .windows)
+        try file.readToEndAlloc(allocator, file_size)
+    else
+        try std.posix.mmap(
+            null,
+            file_size,
+            std.posix.PROT.READ,
+            .{ .TYPE = .PRIVATE },
+            file.handle,
+            0,
+        );
 
     // Normalise to NDJSON. JSON arrays are converted (mmap freed immediately after);
     // NDJSON passes through and the mmap is held alive via merged.mmap_data.
     var ndjson_owned: ?[]u8 = null;
-    const data: []const u8 = if (detectFormat(mmap_data) == .json_array) blk: {
-        ndjson_owned = try jsonArrayToNdjson(mmap_data, allocator);
-        std.posix.munmap(mmap_data);
+    const data: []const u8 = if (detectFormat(file_data) == .json_array) blk: {
+        ndjson_owned = try jsonArrayToNdjson(file_data, allocator);
+        if (builtin.os.tag == .windows) allocator.free(file_data) else std.posix.munmap(file_data);
         break :blk ndjson_owned.?;
-    } else mmap_data;
+    } else file_data;
 
     // Use parallel processing
     const num_threads = @min(config.num_threads, std.Thread.getCpuCount() catch 4);
@@ -404,11 +410,13 @@ pub fn processFile(
 
     // Merge results from all threads
     var merged = ChunkResult.init(allocator);
-    // Keep backing data alive as long as merged: mmap (NDJSON) or owned buf (JSON array)
+    // Keep backing data alive as long as merged: mmap/owned NDJSON input or converted JSON array.
     if (ndjson_owned) |d|
         merged.owned_data = d
+    else if (builtin.os.tag == .windows)
+        merged.owned_data = file_data
     else
-        merged.mmap_data = mmap_data;
+        merged.mmap_data = file_data;
 
     for (results) |*result| {
         merged.lines_processed += result.lines_processed;
@@ -520,16 +528,18 @@ pub fn processFileWithOutput(
         return empty;
     }
 
-    // Memory-map the file for true zero-copy reading
-    const data = try std.posix.mmap(
-        null,
-        file_size,
-        std.posix.PROT.READ,
-        .{ .TYPE = .PRIVATE },
-        file.handle,
-        0,
-    );
-    defer std.posix.munmap(data);
+    const data = if (builtin.os.tag == .windows)
+        try file.readToEndAlloc(allocator, file_size)
+    else
+        try std.posix.mmap(
+            null,
+            file_size,
+            std.posix.PROT.READ,
+            .{ .TYPE = .PRIVATE },
+            file.handle,
+            0,
+        );
+    defer if (builtin.os.tag == .windows) allocator.free(data) else std.posix.munmap(data);
 
     // Normalise to NDJSON (JSON arrays are converted; NDJSON passes through untouched)
     var ndjson_owned: ?[]u8 = null;
