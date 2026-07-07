@@ -36,11 +36,23 @@ jobs:
         run: zig build test
 
   build:
-    name: Build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Build (${{ matrix.name }})
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - name: linux-x86_64
+            target: x86_64-linux-gnu
+            binary: zson
+          - name: macos-x86_64
+            target: x86_64-macos
+            binary: zson
+          - name: macos-aarch64
+            target: aarch64-macos
+            binary: zson
+          - name: windows-x86_64
+            target: x86_64-windows-gnu
+            binary: zson.exe
     steps:
       - uses: actions/checkout@v4
 
@@ -50,12 +62,10 @@ jobs:
           version: "0.15.2"
 
       - name: Build (ReleaseFast)
-        run: zig build -Doptimize=ReleaseFast
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: zson-${{ matrix.os }}
-          path: |
-            zig-out/bin/zson
-            zig-out/bin/zson.exe
+          name: zson-${{ matrix.name }}
+          path: zig-out/bin/${{ matrix.binary }}
