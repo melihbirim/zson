@@ -74,6 +74,9 @@
         "build.zig",
         "build.zig.zon",
         "release.sh",
+        "README.md",
+        "assets",
+        "tapes",
         "src",
         // For example...
         //"LICENSE",

@@ -1,7 +1,15 @@
+<p align="center">
+  <img src="assets/zson-icon.svg" width="112" alt="zson terminal query icon">
+</p>
+
 # zson
 
 A fast command-line tool for querying JSON and NDJSON files using MongoDB query syntax.
 Both formats are detected automatically — no flags needed.
+
+<p align="center">
+  <img src="assets/zson-vhs.gif" width="720" alt="Animated VHS tape showing zson filtering JSON records">
+</p>
 
 ```bash
 # NDJSON (one object per line)
