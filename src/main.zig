@@ -3,6 +3,7 @@ const cli = @import("cli.zig");
 const query = @import("query.zig");
 const parallel = @import("parallel_ndjson.zig");
 const output = @import("output.zig");
+const json_parser = @import("json_parser.zig");
 
 pub fn main() !void {
     const allocator = std.heap.c_allocator;
@@ -45,9 +46,9 @@ pub fn main() !void {
         std.process.exit(1);
     };
 
-    // ── file path: both sub-cases return early ───────────────────────────────
+    // ── file path: use fast streaming output when flags allow it ─────────────
     if (!std.mem.eql(u8, file_path, "-")) {
-        if (options.count_only) {
+        if (options.count_only and options.limit == null) {
             // Fast count-only path: no object materialisation, just atomic counters
             const count = try parallel.processFileCount(
                 file_path,
@@ -61,16 +62,30 @@ pub fn main() !void {
             return;
         }
 
-        // Full output mode: parallel generation + single syscall write
-        var output_buffer = try parallel.processFileWithOutput(
+        if (options.output_format == .ndjson and options.limit == null) {
+            // Fast default output path: worker threads serialize NDJSON directly.
+            var output_buffer = try parallel.processFileWithOutput(
+                file_path,
+                &parsed_query.filter,
+                .{ .num_threads = options.threads },
+                options.select_fields,
+                allocator,
+            );
+            defer output_buffer.deinit(allocator);
+            _ = try std.posix.write(std.posix.STDOUT_FILENO, output_buffer.items);
+            return;
+        }
+
+        var result = try parallel.processFile(
             file_path,
             &parsed_query.filter,
             .{ .num_threads = options.threads },
-            options.select_fields,
             allocator,
         );
-        defer output_buffer.deinit(allocator);
-        _ = try std.posix.write(std.posix.STDOUT_FILENO, output_buffer.items);
+        defer result.deinit();
+
+        const objects = limitedObjects(result.matches.items, options.limit);
+        try writeResults(objects, options, allocator);
         return;
     }
 
@@ -79,32 +94,41 @@ pub fn main() !void {
     defer result.deinit();
 
     // Apply limit if specified
-    const objects = if (options.limit) |limit|
-        result.matches.items[0..@min(limit, result.matches.items.len)]
-    else
-        result.matches.items;
+    const objects = limitedObjects(result.matches.items, options.limit);
+    try writeResults(objects, options, allocator);
+}
 
-    // Output results directly to stdout using low-level write
-    // Similar to sieswi's approach: direct system calls for maximum performance
+fn limitedObjects(
+    objects: []const json_parser.JsonObject,
+    limit: ?usize,
+) []const json_parser.JsonObject {
+    if (limit) |n| return objects[0..@min(n, objects.len)];
+    return objects;
+}
+
+fn writeResults(
+    objects: []const json_parser.JsonObject,
+    options: cli.CliOptions,
+    allocator: std.mem.Allocator,
+) !void {
     if (options.count_only) {
         var buf: [32]u8 = undefined;
         const count_str = try std.fmt.bufPrint(&buf, "{d}\n", .{objects.len});
         _ = try std.posix.write(std.posix.STDOUT_FILENO, count_str);
-    } else {
-        // Buffer output for performance
-        var output_buf: std.ArrayList(u8) = .{};
-        defer output_buf.deinit(allocator);
-        const writer = output_buf.writer(allocator);
-
-        switch (options.output_format) {
-            .ndjson => try output.writeNdjson(writer, objects, options.select_fields),
-            .json => try output.writeJson(writer, objects, options.select_fields, options.pretty),
-            .csv => try output.writeCsv(writer, objects, options.select_fields),
-        }
-
-        // Write to stdout in one syscall for efficiency
-        _ = try std.posix.write(std.posix.STDOUT_FILENO, output_buf.items);
+        return;
     }
+
+    var output_buf: std.ArrayList(u8) = .{};
+    defer output_buf.deinit(allocator);
+    const writer = output_buf.writer(allocator);
+
+    switch (options.output_format) {
+        .ndjson => try output.writeNdjson(writer, objects, options.select_fields),
+        .json => try output.writeJson(writer, objects, options.select_fields, options.pretty),
+        .csv => try output.writeCsv(writer, objects, options.select_fields),
+    }
+
+    _ = try std.posix.write(std.posix.STDOUT_FILENO, output_buf.items);
 }
 
 fn processStdin(

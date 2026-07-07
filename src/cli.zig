@@ -36,7 +36,7 @@ pub const CliOptions = struct {
     pretty: bool = false,
 
     /// Number of threads to use
-    threads: usize = 7,
+    threads: usize = 4,
 
     /// Show help message
     show_help: bool = false,
@@ -179,7 +179,7 @@ pub fn printHelp(writer: anytype) !void {
         \\    --output <FORMAT>       Output format: json, ndjson, csv (default: ndjson)
         \\    --select <FIELDS>       Comma-separated fields to output (e.g., 'name,age,city')
         \\    --limit <N>             Limit number of results
-        \\    --threads <N>           Number of threads to use (default: 7)
+        \\    --threads <N>           Number of threads to use (default: 4)
         \\
         \\EXAMPLES:
         \\    # Find all users over 30
