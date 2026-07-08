@@ -21,6 +21,40 @@ zson '{ "age": { "$gt": 30 } }' users.json
 
 No custom DSL to learn — if you know MongoDB queries, you already know zson.
 
+## Why zson?
+
+Most JSON tools are built around parsing documents or transforming arbitrary
+JSON. zson is built for a narrower job: filtering JSON records quickly with
+Mongo-style predicates.
+
+Use zson when JSON is already moving through your system and you need to cut it
+down before the next step:
+
+- API responses and request bodies
+- database JSON/JSONB rows or exports
+- event streams and queue payloads
+- logs and NDJSON files
+- generated test fixtures
+- integration-test setup and assertions
+
+For integration tests, zson can replace a database dependency when the test only
+needs document-shaped data, not actual database behavior. Instead of starting a
+MongoDB container just to prepare fixtures, filter a JSON export directly:
+
+```bash
+zson '{ "tenantId": "acme", "active": true }' fixtures/users.ndjson \
+  --select 'id,email,role' \
+  --output json > /tmp/acme-users.json
+```
+
+That keeps CI setup deterministic and avoids database startup cost for tests
+that only need filtered fixture data.
+
+zson is not a local MongoDB. It does not provide indexes, collections,
+transactions, update operators, BSON compatibility, aggregation pipelines, or
+Mongo driver behavior. Use it when you need Mongo-style filtering over JSON
+records, not when you need to test MongoDB itself.
+
 ## Install
 
 **Homebrew (macOS / Linux):**
