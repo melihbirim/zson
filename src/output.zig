@@ -115,9 +115,8 @@ fn writeJsonObject(
                 }
                 first = false;
 
-                try writer.writeByte('"');
-                try writer.writeAll(field_name);
-                try writer.writeAll("\":");
+                try writeJsonString(writer, field_name);
+                try writer.writeByte(':');
                 if (pretty) try writer.writeByte(' ');
                 try writeJsonValue(writer, value);
             }
@@ -131,9 +130,8 @@ fn writeJsonObject(
             }
             first = false;
 
-            try writer.writeByte('"');
-            try writer.writeAll(field.key);
-            try writer.writeAll("\":");
+            try writeJsonString(writer, field.key);
+            try writer.writeByte(':');
             if (pretty) try writer.writeByte(' ');
             try writeJsonValue(writer, field.value);
         }
@@ -148,12 +146,7 @@ fn writeJsonValue(writer: anytype, value: json_parser.JsonValue) anyerror!void {
         .null_value => try writer.writeAll("null"),
         .bool_value => |b| try writer.writeAll(if (b) "true" else "false"),
         .number => |slice| try writer.writeAll(slice),
-        .string => |s| {
-            try writer.writeByte('"');
-            // TODO: Proper JSON string escaping
-            try writer.writeAll(s);
-            try writer.writeByte('"');
-        },
+        .string => |s| try writeJsonString(writer, s),
         .object => |obj| {
             try writeJsonObject(writer, &obj, null, false);
         },
@@ -166,6 +159,24 @@ fn writeJsonValue(writer: anytype, value: json_parser.JsonValue) anyerror!void {
             try writer.writeByte(']');
         },
     }
+}
+
+fn writeJsonString(writer: anytype, value: []const u8) anyerror!void {
+    try writer.writeByte('"');
+    for (value) |c| {
+        switch (c) {
+            '"' => try writer.writeAll("\\\""),
+            '\\' => try writer.writeAll("\\\\"),
+            0x08 => try writer.writeAll("\\b"),
+            0x0c => try writer.writeAll("\\f"),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            0x00...0x07, 0x0b, 0x0e...0x1f => try writer.print("\\u{x:0>4}", .{c}),
+            else => try writer.writeByte(c),
+        }
+    }
+    try writer.writeByte('"');
 }
 
 /// Write a CSV field (header)
@@ -228,6 +239,36 @@ test "output: write ndjson" {
     try writeNdjson(buffer.writer(allocator), &objects, null);
 
     const expected = "{\"name\":\"Alice\",\"age\":30}\n";
+    try std.testing.expectEqualStrings(expected, buffer.items);
+}
+
+test "output: escapes JSON strings and keys" {
+    const allocator = std.testing.allocator;
+
+    var fields = [_]json_parser.JsonObject.Field{
+        .{
+            .key = "full\"name",
+            .value = .{ .string = "Alice\nAdmin" },
+        },
+        .{
+            .key = "path",
+            .value = .{ .string = "C:\\tmp" },
+        },
+    };
+
+    const obj1 = json_parser.JsonObject{
+        .fields = &fields,
+        .allocator = allocator,
+    };
+
+    const objects = [_]json_parser.JsonObject{obj1};
+
+    var buffer = std.ArrayList(u8){};
+    defer buffer.deinit(allocator);
+
+    try writeNdjson(buffer.writer(allocator), &objects, null);
+
+    const expected = "{\"full\\\"name\":\"Alice\\nAdmin\",\"path\":\"C:\\\\tmp\"}\n";
     try std.testing.expectEqualStrings(expected, buffer.items);
 }
 

@@ -29,6 +29,9 @@ pub const CliOptions = struct {
     /// Just count matches, don't output records
     count_only: bool = false,
 
+    /// Assert that the match count equals this value
+    assert_count: ?usize = null,
+
     /// Limit number of results
     limit: ?usize = null,
 
@@ -71,6 +74,9 @@ pub fn parseArgs(allocator: std.mem.Allocator) !CliOptions {
                 options.show_help = true;
             } else if (std.mem.eql(u8, arg, "--count")) {
                 options.count_only = true;
+            } else if (std.mem.eql(u8, arg, "--assert-count")) {
+                const value = args.next() orelse return error.MissingValue;
+                options.assert_count = try std.fmt.parseInt(usize, value, 10);
             } else if (std.mem.eql(u8, arg, "--pretty")) {
                 options.pretty = true;
             } else if (std.mem.eql(u8, arg, "--output")) {
@@ -175,6 +181,7 @@ pub fn printHelp(writer: anytype) !void {
         \\OPTIONS:
         \\    -h, --help              Show this help message
         \\    -c, --count             Only count matches, don't output records
+        \\    --assert-count <N>      Exit non-zero unless exactly N records match
         \\    -p, --pretty            Pretty-print JSON output
         \\    --output <FORMAT>       Output format: json, ndjson, csv (default: ndjson)
         \\    --select <FIELDS>       Comma-separated fields to output (e.g., 'name,age,city')
@@ -187,6 +194,9 @@ pub fn printHelp(writer: anytype) !void {
         \\
         \\    # Count active users in NYC
         \\    zson --count '{"city": "NYC", "active": true}' users.ndjson
+        \\
+        \\    # Assert fixture count in CI
+        \\    zson --assert-count 3 '{"role": "admin"}' users.ndjson
         \\
         \\    # Select specific fields, output as JSON
         \\    zson --select 'name,email' --output json '{"age": {"$gte": 21}}' users.ndjson

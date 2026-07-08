@@ -114,6 +114,7 @@ zson [options] '<query>' <file>   # .ndjson or .json — auto-detected
 Options:
   --select <fields>   Comma-separated fields to include in output
   --count             Print match count only
+  --assert-count <n>  Exit non-zero unless exactly n records match
   --limit <n>         Return at most n results
   --threads <n>       Number of worker threads (default: 4)
   --output <fmt>      Output format: ndjson (default), json, csv
@@ -181,7 +182,7 @@ defer result.deinit();
 On this repo's generated 100k-record benchmark, the in-memory filter path was:
 
 ```text
-zson parsed (4 threads)   ~13 ms
+zson parsed (4 threads)   ~29 ms
 std.json typed            ~45 ms
 std.json Value            ~92 ms
 jq                       ~260 ms
@@ -222,6 +223,9 @@ zson '{ "active": true }' users.ndjson --select 'id,name,email'
 
 # Count matches
 zson '{ "status": "error" }' logs.ndjson --count
+
+# Assert fixture counts in CI
+zson '{ "role": "admin" }' users.ndjson --assert-count 3
 
 # Logical OR
 zson '{ "$or": [{ "city": "NYC" }, { "city": "LA" }] }' users.ndjson

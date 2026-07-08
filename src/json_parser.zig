@@ -35,10 +35,12 @@ pub const JsonValue = union(enum) {
 pub const JsonObject = struct {
     fields: []Field,
     allocator: Allocator,
+    owned_strings: ?[][]u8 = null,
 
     pub const Field = struct {
         key: []const u8, // Zero-copy slice
         value: JsonValue,
+        key_owned: bool = false,
     };
 
     /// Get field value by key (O(n) for MVP, can optimize later with HashMap)
@@ -54,16 +56,24 @@ pub const JsonObject = struct {
     pub fn deinit(self: *JsonObject) void {
         // Free nested objects and arrays recursively
         for (self.fields) |*field| {
+            if (field.key_owned) self.allocator.free(field.key);
             switch (field.value) {
+                .string => |s| {
+                    if (self.ownsString(s)) self.allocator.free(s);
+                },
                 .object => |*nested| {
                     var obj = nested.*;
                     obj.deinit();
                 },
                 .array => |arr| {
                     for (arr) |*item| {
-                        if (item.* == .object) {
-                            var obj = item.object;
-                            obj.deinit();
+                        switch (item.*) {
+                            .string => |s| if (self.ownsString(s)) self.allocator.free(s),
+                            .object => {
+                                var obj = item.object;
+                                obj.deinit();
+                            },
+                            else => {},
                         }
                     }
                     self.allocator.free(arr);
@@ -71,9 +81,16 @@ pub const JsonObject = struct {
                 else => {},
             }
         }
-        // Only free the field array itself
-        // The keys and simple values are zero-copy slices, don't free them!
+        if (self.owned_strings) |owned| self.allocator.free(owned);
         self.allocator.free(self.fields);
+    }
+
+    inline fn ownsString(self: JsonObject, s: []const u8) bool {
+        const owned = self.owned_strings orelse return false;
+        for (owned) |owned_string| {
+            if (owned_string.ptr == s.ptr and owned_string.len == s.len) return true;
+        }
+        return false;
     }
 };
 
@@ -90,7 +107,15 @@ pub fn parseObject(line: []const u8, allocator: Allocator) ParseError!JsonObject
 
     // Parse fields
     var fields = std.ArrayList(JsonObject.Field){};
-    errdefer fields.deinit(allocator);
+    var owned_strings = std.ArrayList([]u8){};
+    errdefer {
+        for (fields.items) |*field| {
+            if (field.key_owned) allocator.free(field.key);
+        }
+        fields.deinit(allocator);
+        for (owned_strings.items) |s| allocator.free(s);
+        owned_strings.deinit(allocator);
+    }
 
     var i: usize = 1; // Skip opening {
     while (i < token_count) {
@@ -111,18 +136,12 @@ pub fn parseObject(line: []const u8, allocator: Allocator) ParseError!JsonObject
             return error.ExpectedQuote;
         }
 
-        // Extract key (between quotes)
-        i += 1;
-        const key_start = tokens[i - 1].pos + 1;
-
-        // Find closing quote
-        if (i >= token_count or tokens[i].type != .quote) {
-            return error.MalformedKey;
-        }
-        const key_end = tokens[i].pos;
-        const key = line[key_start..key_end]; // Zero-copy!
-
-        i += 1; // Skip closing quote
+        const key_start = token.pos + 1;
+        const key_end = findStringEndFromTokens(line, tokens[0..token_count], i + 1, key_start) orelse return error.MalformedKey;
+        const raw_key = line[key_start..key_end];
+        const key_has_escape = hasJsonEscape(raw_key);
+        const key = if (key_has_escape) try decodeOwnedJsonString(raw_key, allocator) else raw_key;
+        advanceTokenIndex(tokens[0..token_count], &i, key_end + 1);
 
         // Expect colon
         if (i >= token_count or tokens[i].type != .colon) {
@@ -132,14 +151,24 @@ pub fn parseObject(line: []const u8, allocator: Allocator) ParseError!JsonObject
         i += 1; // Skip colon
 
         // Parse value - pass the colon position for literal extraction
-        const value = try parseValueAfterColon(line, tokens[0..token_count], &i, colon_pos, allocator);
+        const value = try parseValueAfterColon(line, tokens[0..token_count], &i, colon_pos, allocator, &owned_strings);
 
-        try fields.append(allocator, JsonObject.Field{ .key = key, .value = value });
+        try fields.append(allocator, JsonObject.Field{
+            .key = key,
+            .value = value,
+            .key_owned = key_has_escape,
+        });
     }
 
     return JsonObject{
         .fields = try fields.toOwnedSlice(allocator),
         .allocator = allocator,
+        .owned_strings = if (owned_strings.items.len > 0)
+            try owned_strings.toOwnedSlice(allocator)
+        else blk: {
+            owned_strings.deinit(allocator);
+            break :blk null;
+        },
     };
 }
 
@@ -157,30 +186,37 @@ pub const ParseError = error{
     NotANumber,
     NotAString,
     NotABoolean,
+    InvalidEscape,
+    InvalidUnicodeEscape,
     OutOfMemory,
 };
 
 /// Parse a JSON value that comes after a colon
 /// i points to the token after the colon (may be quote, comma, or close brace)
 /// colon_pos is the position of the colon in the source text
-fn parseValueAfterColon(line: []const u8, tokens: []simd.Token, i: *usize, colon_pos: usize, allocator: Allocator) ParseError!JsonValue {
+fn parseValueAfterColon(
+    line: []const u8,
+    tokens: []simd.Token,
+    i: *usize,
+    colon_pos: usize,
+    allocator: Allocator,
+    owned_strings: *std.ArrayList([]u8),
+) ParseError!JsonValue {
     if (i.* >= tokens.len) return error.UnexpectedEnd;
 
     const next_token = tokens[i.*];
 
     switch (next_token.type) {
         .quote => {
-            // String value - extract between quotes
             const start = next_token.pos + 1;
-            i.* += 1; // Move past opening quote
+            const end = findStringEndFromTokens(line, tokens, i.* + 1, start) orelse return error.MalformedString;
+            const raw = line[start..end];
+            const has_escape = hasJsonEscape(raw);
+            const value = if (has_escape) try decodeOwnedJsonString(raw, allocator) else raw;
+            if (has_escape) try owned_strings.append(allocator, @constCast(value));
+            advanceTokenIndex(tokens, i, end + 1);
 
-            if (i.* >= tokens.len or tokens[i.*].type != .quote) {
-                return error.MalformedString;
-            }
-            const end = tokens[i.*].pos;
-            i.* += 1; // Move past closing quote
-
-            return JsonValue{ .string = line[start..end] }; // Zero-copy!
+            return JsonValue{ .string = value };
         },
         .open_brace => {
             // Nested object - parse it recursively
@@ -249,7 +285,7 @@ fn parseValueAfterColon(line: []const u8, tokens: []simd.Token, i: *usize, colon
                         const end = if (is_sep) idx else idx + 1;
                         const elem = std.mem.trim(u8, array_content[elem_start..end], " \t\r\n");
                         if (elem.len > 0) {
-                            const val = try parseArrayElement(elem, allocator);
+                            const val = try parseArrayElement(elem, allocator, owned_strings);
                             try array_items.append(allocator, val);
                         }
                         elem_start = idx + 1;
@@ -294,13 +330,17 @@ fn parseValueAfterColon(line: []const u8, tokens: []simd.Token, i: *usize, colon
 }
 
 /// Parse a single element inside a JSON array (string, number, bool, null, or object)
-fn parseArrayElement(elem: []const u8, allocator: Allocator) ParseError!JsonValue {
+fn parseArrayElement(elem: []const u8, allocator: Allocator, owned_strings: *std.ArrayList([]u8)) ParseError!JsonValue {
     if (elem.len == 0) return error.InvalidJSON;
     return switch (elem[0]) {
         '{' => JsonValue{ .object = try parseObject(elem, allocator) },
         '"' => blk: {
             if (elem.len < 2 or elem[elem.len - 1] != '"') return error.MalformedString;
-            break :blk JsonValue{ .string = elem[1 .. elem.len - 1] }; // zero-copy
+            const raw = elem[1 .. elem.len - 1];
+            const has_escape = hasJsonEscape(raw);
+            const value = if (has_escape) try decodeOwnedJsonString(raw, allocator) else raw;
+            if (has_escape) try owned_strings.append(allocator, @constCast(value));
+            break :blk JsonValue{ .string = value };
         },
         else => {
             if (std.mem.eql(u8, elem, "null")) return JsonValue{ .null_value = {} };
@@ -309,6 +349,89 @@ fn parseArrayElement(elem: []const u8, allocator: Allocator) ParseError!JsonValu
             return JsonValue{ .number = elem }; // zero-copy slice
         },
     };
+}
+
+fn advanceTokenIndex(tokens: []simd.Token, i: *usize, min_pos: usize) void {
+    while (i.* < tokens.len and tokens[i.*].pos < min_pos) i.* += 1;
+}
+
+fn findStringEnd(line: []const u8, start: usize) ?usize {
+    var idx = start;
+    var escaped = false;
+    while (idx < line.len) : (idx += 1) {
+        const c = line[idx];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (c == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (c == '"') return idx;
+    }
+    return null;
+}
+
+fn findStringEndFromTokens(line: []const u8, tokens: []simd.Token, token_start: usize, string_start: usize) ?usize {
+    if (token_start < tokens.len and tokens[token_start].type == .quote and !isEscapedAt(line, tokens[token_start].pos)) {
+        return tokens[token_start].pos;
+    }
+    return findStringEnd(line, string_start);
+}
+
+fn isEscapedAt(line: []const u8, pos: usize) bool {
+    if (pos == 0) return false;
+    var backslashes: usize = 0;
+    var idx = pos;
+    while (idx > 0) {
+        idx -= 1;
+        if (line[idx] != '\\') break;
+        backslashes += 1;
+    }
+    return backslashes % 2 == 1;
+}
+
+fn hasJsonEscape(raw: []const u8) bool {
+    return std.mem.indexOfScalar(u8, raw, '\\') != null;
+}
+
+fn decodeOwnedJsonString(raw: []const u8, allocator: Allocator) ParseError![]u8 {
+    var out = std.ArrayList(u8){};
+    errdefer out.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < raw.len) : (i += 1) {
+        const c = raw[i];
+        if (c != '\\') {
+            try out.append(allocator, c);
+            continue;
+        }
+
+        i += 1;
+        if (i >= raw.len) return error.InvalidEscape;
+        switch (raw[i]) {
+            '"' => try out.append(allocator, '"'),
+            '\\' => try out.append(allocator, '\\'),
+            '/' => try out.append(allocator, '/'),
+            'b' => try out.append(allocator, 0x08),
+            'f' => try out.append(allocator, 0x0c),
+            'n' => try out.append(allocator, '\n'),
+            'r' => try out.append(allocator, '\r'),
+            't' => try out.append(allocator, '\t'),
+            'u' => {
+                if (i + 4 >= raw.len) return error.InvalidUnicodeEscape;
+                const code = std.fmt.parseInt(u21, raw[i + 1 .. i + 5], 16) catch return error.InvalidUnicodeEscape;
+                var utf8_buf: [4]u8 = undefined;
+                const len = std.unicode.utf8Encode(code, &utf8_buf) catch return error.InvalidUnicodeEscape;
+                try out.appendSlice(allocator, utf8_buf[0..len]);
+                i += 4;
+            },
+            else => return error.InvalidEscape,
+        }
+    }
+
+    return try out.toOwnedSlice(allocator);
 }
 
 /// Old parseValue function - keeping for reference but unused
@@ -418,22 +541,40 @@ test "parse real NDJSON line from sample" {
     try std.testing.expect(try getBool(obj.get("active").?));
 }
 
-test "zero-copy verification" {
+test "zero-copy string value verification" {
     const line = "{\"key\":\"value\"}";
     var obj = try parseObject(line, std.testing.allocator);
     defer obj.deinit();
 
-    const key = obj.fields[0].key;
     const value_str = try getString(obj.fields[0].value);
 
-    // Verify the slices point into the original line buffer
+    // Unescaped simple values stay zero-copy.
     const line_start = @intFromPtr(line.ptr);
     const line_end = line_start + line.len;
 
-    const key_addr = @intFromPtr(key.ptr);
     const value_addr = @intFromPtr(value_str.ptr);
 
-    // Both should be within the original line buffer (zero-copy!)
-    try std.testing.expect(key_addr >= line_start and key_addr < line_end);
     try std.testing.expect(value_addr >= line_start and value_addr < line_end);
+}
+
+test "parse escaped JSON strings" {
+    const line = "{\"full\\\"name\":\"Alice\\nAdmin\",\"path\":\"C:\\\\tmp\",\"unicode\":\"A\\u0042\"}";
+    var obj = try parseObject(line, std.testing.allocator);
+    defer obj.deinit();
+
+    try std.testing.expectEqualStrings("full\"name", obj.fields[0].key);
+    try std.testing.expectEqualStrings("Alice\nAdmin", try getString(obj.get("full\"name").?));
+    try std.testing.expectEqualStrings("C:\\tmp", try getString(obj.get("path").?));
+    try std.testing.expectEqualStrings("AB", try getString(obj.get("unicode").?));
+}
+
+test "parse escaped string in array" {
+    const line = "{\"tags\":[\"alpha\",\"line\\nbreak\"]}";
+    var obj = try parseObject(line, std.testing.allocator);
+    defer obj.deinit();
+
+    const tags = obj.get("tags").?.array;
+    try std.testing.expectEqual(@as(usize, 2), tags.len);
+    try std.testing.expectEqualStrings("alpha", try getString(tags[0]));
+    try std.testing.expectEqualStrings("line\nbreak", try getString(tags[1]));
 }

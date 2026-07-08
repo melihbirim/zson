@@ -48,7 +48,7 @@ pub fn main() !void {
 
     // ── file path: use fast streaming output when flags allow it ─────────────
     if (!std.mem.eql(u8, file_path, "-")) {
-        if (options.count_only and options.limit == null) {
+        if ((options.count_only or options.assert_count != null) and options.limit == null) {
             // Fast count-only path: no object materialisation, just atomic counters
             const count = try parallel.processFileCount(
                 file_path,
@@ -56,9 +56,8 @@ pub fn main() !void {
                 .{ .num_threads = options.threads },
                 allocator,
             );
-            var buf: [32]u8 = undefined;
-            const count_str = try std.fmt.bufPrint(&buf, "{d}\n", .{count});
-            try writeStdout(count_str);
+            try maybeAssertCount(count, options.assert_count);
+            if (options.count_only) try writeCount(count);
             return;
         }
 
@@ -111,10 +110,11 @@ fn writeResults(
     options: cli.CliOptions,
     allocator: std.mem.Allocator,
 ) !void {
+    try maybeAssertCount(objects.len, options.assert_count);
+    if (options.assert_count != null and !options.count_only) return;
+
     if (options.count_only) {
-        var buf: [32]u8 = undefined;
-        const count_str = try std.fmt.bufPrint(&buf, "{d}\n", .{objects.len});
-        try writeStdout(count_str);
+        try writeCount(objects.len);
         return;
     }
 
@@ -129,6 +129,20 @@ fn writeResults(
     }
 
     try writeStdout(output_buf.items);
+}
+
+fn maybeAssertCount(actual: usize, expected: ?usize) !void {
+    const expected_count = expected orelse return;
+    if (actual == expected_count) return;
+
+    std.debug.print("assert-count failed: expected {d}, got {d}\n", .{ expected_count, actual });
+    std.process.exit(1);
+}
+
+fn writeCount(count: usize) !void {
+    var buf: [32]u8 = undefined;
+    const count_str = try std.fmt.bufPrint(&buf, "{d}\n", .{count});
+    try writeStdout(count_str);
 }
 
 fn writeStdout(bytes: []const u8) !void {
