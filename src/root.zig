@@ -6,8 +6,14 @@ pub const output = @import("output.zig");
 pub const cli = @import("cli.zig");
 pub const api = @import("api.zig");
 
+pub const q = api.q;
+pub const Filter = api.Filter;
+pub const Value = api.Value;
 pub const Options = api.Options;
 pub const QueryResult = api.QueryResult;
 pub const queryData = api.queryData;
+pub const queryDataWhere = api.queryDataWhere;
 pub const queryNdjson = api.queryNdjson;
+pub const queryNdjsonWhere = api.queryNdjsonWhere;
 pub const queryFile = api.queryFile;
+pub const queryFileWhere = api.queryFileWhere;

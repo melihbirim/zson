@@ -38,16 +38,30 @@ pub fn main() !void {
     var results = std.ArrayList(BenchResult).empty;
     defer results.deinit(allocator);
 
-    try results.append(allocator, try benchZson(data.items, allocator, 1));
-    try results.append(allocator, try benchZson(data.items, allocator, 4));
-    try results.append(allocator, try benchStdJsonValue(data.items, allocator));
-    try results.append(allocator, try benchStdJsonTyped(data.items, allocator));
+    try results.append(allocator, try benchZsonFilter(data.items, allocator, 1));
+    try results.append(allocator, try benchZsonFilter(data.items, allocator, 4));
+    try results.append(allocator, try benchStdJsonValueFilter(data.items, allocator));
+    try results.append(allocator, try benchStdJsonTypedFilter(data.items, allocator));
     if (try benchJq(data_path, allocator)) |result| try results.append(allocator, result);
     if (try benchDuckDb(data_path, allocator)) |result| try results.append(allocator, result);
 
+    std.debug.print("Parse + filter, in-memory buffer:\n", .{});
     std.debug.print("{s:<24} {s:>10} {s:>12}\n", .{ "library", "matches", "time" });
     std.debug.print("{s:-<24} {s:->10} {s:->12}\n", .{ "", "", "" });
     for (results.items) |r| {
+        std.debug.print("{s:<24} {d:>10} {d:>9.2} ms\n", .{ r.name, r.matches, r.ms });
+    }
+
+    std.debug.print("\nParse + filter + serialize matched NDJSON + write file:\n", .{});
+    var roundtrip_results = std.ArrayList(BenchResult).empty;
+    defer roundtrip_results.deinit(allocator);
+
+    try roundtrip_results.append(allocator, try benchZsonRoundTrip(data.items, allocator, 4));
+    try roundtrip_results.append(allocator, try benchStdJsonTypedRoundTrip(data.items, allocator));
+
+    std.debug.print("{s:<24} {s:>10} {s:>12}\n", .{ "library", "matches", "time" });
+    std.debug.print("{s:-<24} {s:->10} {s:->12}\n", .{ "", "", "" });
+    for (roundtrip_results.items) |r| {
         std.debug.print("{s:<24} {d:>10} {d:>9.2} ms\n", .{ r.name, r.matches, r.ms });
     }
 }
@@ -81,15 +95,19 @@ fn generateNdjson(allocator: std.mem.Allocator, count: usize) !std.ArrayList(u8)
     return buf;
 }
 
-fn benchZson(data: []const u8, allocator: std.mem.Allocator, threads: usize) !BenchResult {
-    const q = "{\"age\":{\"$gte\":40},\"active\":true}";
+fn benchZsonFilter(data: []const u8, allocator: std.mem.Allocator, threads: usize) !BenchResult {
+    var filters = [_]zson.Filter{
+        zson.q.gte("age", zson.q.number(40)),
+        zson.q.eq("active", zson.q.boolean(true)),
+    };
+    const filter = zson.q.all(&filters);
 
     // Warm up once so timing is less dominated by first-use effects.
-    var warmup = try zson.queryData(data, q, .{ .num_threads = threads }, allocator);
+    var warmup = try zson.queryDataWhere(data, filter, .{ .num_threads = threads }, allocator);
     warmup.deinit();
 
     const start = std.time.nanoTimestamp();
-    var result = try zson.queryData(data, q, .{ .num_threads = threads }, allocator);
+    var result = try zson.queryDataWhere(data, filter, .{ .num_threads = threads }, allocator);
     defer result.deinit();
     const elapsed = std.time.nanoTimestamp() - start;
 
@@ -100,7 +118,7 @@ fn benchZson(data: []const u8, allocator: std.mem.Allocator, threads: usize) !Be
     };
 }
 
-fn benchStdJsonValue(data: []const u8, allocator: std.mem.Allocator) !BenchResult {
+fn benchStdJsonValueFilter(data: []const u8, allocator: std.mem.Allocator) !BenchResult {
     _ = try countStdJsonValue(data, allocator);
 
     const start = std.time.nanoTimestamp();
@@ -134,7 +152,7 @@ fn countStdJsonValue(data: []const u8, allocator: std.mem.Allocator) !usize {
     return matches;
 }
 
-fn benchStdJsonTyped(data: []const u8, allocator: std.mem.Allocator) !BenchResult {
+fn benchStdJsonTypedFilter(data: []const u8, allocator: std.mem.Allocator) !BenchResult {
     _ = try countStdJsonTyped(data, allocator);
 
     const start = std.time.nanoTimestamp();
@@ -146,6 +164,85 @@ fn benchStdJsonTyped(data: []const u8, allocator: std.mem.Allocator) !BenchResul
         .matches = matches,
         .ms = nanosToMs(elapsed),
     };
+}
+
+fn benchZsonRoundTrip(data: []const u8, allocator: std.mem.Allocator, threads: usize) !BenchResult {
+    _ = try writeZsonRoundTrip(data, allocator, threads, ".zig-cache/bench/zson-roundtrip.ndjson");
+
+    const start = std.time.nanoTimestamp();
+    const matches = try writeZsonRoundTrip(data, allocator, threads, ".zig-cache/bench/zson-roundtrip.ndjson");
+    const elapsed = std.time.nanoTimestamp() - start;
+
+    return .{
+        .name = "zson roundtrip",
+        .matches = matches,
+        .ms = nanosToMs(elapsed),
+    };
+}
+
+fn writeZsonRoundTrip(
+    data: []const u8,
+    allocator: std.mem.Allocator,
+    threads: usize,
+    path: []const u8,
+) !usize {
+    var filters = [_]zson.Filter{
+        zson.q.gte("age", zson.q.number(40)),
+        zson.q.eq("active", zson.q.boolean(true)),
+    };
+
+    var result = try zson.queryDataWhere(data, zson.q.all(&filters), .{ .num_threads = threads }, allocator);
+    defer result.deinit();
+
+    const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+    defer file.close();
+    var writer_buffer: [64 * 1024]u8 = undefined;
+    var file_writer = file.writer(&writer_buffer);
+    try zson.output.writeNdjson(&file_writer.interface, result.items(), null);
+    try file_writer.interface.flush();
+
+    return result.len();
+}
+
+fn benchStdJsonTypedRoundTrip(data: []const u8, allocator: std.mem.Allocator) !BenchResult {
+    _ = try writeStdJsonTypedRoundTrip(data, allocator, ".zig-cache/bench/std-json-typed-roundtrip.ndjson");
+
+    const start = std.time.nanoTimestamp();
+    const matches = try writeStdJsonTypedRoundTrip(data, allocator, ".zig-cache/bench/std-json-typed-roundtrip.ndjson");
+    const elapsed = std.time.nanoTimestamp() - start;
+
+    return .{
+        .name = "std.json typed roundtrip",
+        .matches = matches,
+        .ms = nanosToMs(elapsed),
+    };
+}
+
+fn writeStdJsonTypedRoundTrip(data: []const u8, allocator: std.mem.Allocator, path: []const u8) !usize {
+    const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+    defer file.close();
+    var writer_buffer: [64 * 1024]u8 = undefined;
+    var file_writer = file.writer(&writer_buffer);
+    const writer = &file_writer.interface;
+
+    var matches: usize = 0;
+    var lines = std.mem.splitScalar(u8, data, '\n');
+
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+
+        const parsed = try std.json.parseFromSlice(Record, allocator, line, .{});
+        defer parsed.deinit();
+
+        if (parsed.value.age >= 40 and parsed.value.active) {
+            matches += 1;
+            try std.json.Stringify.value(parsed.value, .{}, writer);
+            try writer.writeByte('\n');
+        }
+    }
+
+    try writer.flush();
+    return matches;
 }
 
 fn countStdJsonTyped(data: []const u8, allocator: std.mem.Allocator) !usize {

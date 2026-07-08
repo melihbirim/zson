@@ -16,11 +16,13 @@ pub fn main() !void {
         \\
     ;
 
-    var result = try zson.queryNdjson(
-        data,
-        "{\"city\":\"NYC\",\"active\":true,\"age\":{\"$gte\":30}}",
-        allocator,
-    );
+    var filters = [_]zson.Filter{
+        zson.q.eq("city", zson.q.string("NYC")),
+        zson.q.eq("active", zson.q.boolean(true)),
+        zson.q.gte("age", zson.q.number(30)),
+    };
+
+    var result = try zson.queryNdjsonWhere(data, zson.q.all(&filters), allocator);
     defer result.deinit();
 
     std.debug.print("matched {d} records\n", .{result.len()});

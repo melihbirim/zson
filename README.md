@@ -95,7 +95,13 @@ Use zson as a Zig module when you want parsed native objects instead of CLI outp
 const std = @import("std");
 const zson = @import("zson");
 
-var result = try zson.queryNdjson(data, "{\"age\":{\"$gt\":30}}", allocator);
+var filters = [_]zson.Filter{
+    zson.q.eq("city", zson.q.string("NYC")),
+    zson.q.eq("active", zson.q.boolean(true)),
+    zson.q.gt("age", zson.q.number(30)),
+};
+
+var result = try zson.queryNdjsonWhere(data, zson.q.all(&filters), allocator);
 defer result.deinit();
 
 for (result.items()) |obj| {
@@ -104,7 +110,9 @@ for (result.items()) |obj| {
 }
 ```
 
-For files or JSON arrays, use `zson.queryFile` or `zson.queryData`.
+For files or JSON arrays, use `zson.queryFileWhere` or `zson.queryDataWhere`.
+If you need CLI-compatible MongoDB JSON syntax, `zson.queryNdjson`,
+`zson.queryFile`, and `zson.queryData` still accept query strings.
 
 Run the full example:
 
@@ -112,10 +120,52 @@ Run the full example:
 zig build example-lib
 ```
 
+## Instead
+
+If your API or worker already has JSON in memory, the slow path often looks like:
+
+```zig
+// Parse every row into a general JSON value or typed object.
+// Walk fields manually.
+// Build a filtered list.
+// Serialize the matches again.
+```
+
+That works, but it spends business-logic time on generic JSON plumbing. With zson,
+you can keep the filtering path focused:
+
+```zig
+var filters = [_]zson.Filter{
+    zson.q.gte("age", zson.q.number(40)),
+    zson.q.eq("active", zson.q.boolean(true)),
+};
+
+var result = try zson.queryDataWhere(api_body, zson.q.all(&filters), .{}, allocator);
+defer result.deinit();
+```
+
+On this repo's generated 100k-record benchmark, the in-memory filter path was:
+
+```text
+zson parsed (4 threads)   ~13 ms
+std.json typed            ~45 ms
+std.json Value            ~92 ms
+jq                       ~260 ms
+```
+
+That is not a universal latency guarantee, but it shows the intended tradeoff:
+when your request, job, or event handler spends time filtering JSON records,
+zson can move that work out of generic parse/walk code and into a narrower
+predicate engine. Saving tens of milliseconds in a hot API path can mean lower
+response latency, more headroom for business logic, and higher request
+throughput on the same hardware.
+
 ## Benchmarks
 
 Compare zson with Zig `std.json` dynamic and typed parsing. If `jq` or `duckdb`
 are installed, the benchmark includes them as optional external comparisons.
+The benchmark reports separate sections for in-memory parse/filter work and
+parse/filter/serialize/write-to-file round trips.
 
 ```bash
 zig build bench-json -Doptimize=ReleaseFast
