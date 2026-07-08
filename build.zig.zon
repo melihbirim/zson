@@ -78,6 +78,8 @@
         "assets",
         "tapes",
         "src",
+        "examples/lib.zig",
+        "bench/json_libs.zig",
         // For example...
         //"LICENSE",
         //"README.md",

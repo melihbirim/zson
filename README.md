@@ -30,30 +30,45 @@ brew tap melihbirim/zson
 brew install zson
 ```
 
-**Linux from source** (requires [Zig 0.15](https://ziglang.org/download/)):
+**Linux x86_64:**
 
 ```bash
-git clone https://github.com/melihbirim/zson
-cd zson
-zig build -Doptimize=ReleaseFast
-# binary at: ./zig-out/bin/zson
-sudo install -m 755 ./zig-out/bin/zson /usr/local/bin/zson
+curl -L https://github.com/melihbirim/zson/releases/latest/download/zson-x86_64-linux-gnu.tar.gz | tar xz
+sudo install -m 755 zson-x86_64-linux-gnu/zson /usr/local/bin/zson
 ```
 
-**Windows from source** (requires [Zig 0.15](https://ziglang.org/download/)):
+**macOS Apple Silicon:**
+
+```bash
+curl -L https://github.com/melihbirim/zson/releases/latest/download/zson-aarch64-macos.tar.gz | tar xz
+sudo install -m 755 zson-aarch64-macos/zson /usr/local/bin/zson
+```
+
+**macOS Intel:**
+
+```bash
+curl -L https://github.com/melihbirim/zson/releases/latest/download/zson-x86_64-macos.tar.gz | tar xz
+sudo install -m 755 zson-x86_64-macos/zson /usr/local/bin/zson
+```
+
+**Windows x86_64:**
+
+Download `zson-x86_64-windows-gnu.zip` from the
+[latest release](https://github.com/melihbirim/zson/releases/latest), unzip it,
+and add the folder containing `zson.exe` to your `PATH`.
 
 ```powershell
+powershell -Command "Invoke-WebRequest https://github.com/melihbirim/zson/releases/latest/download/zson-x86_64-windows-gnu.zip -OutFile zson.zip"
+powershell -Command "Expand-Archive zson.zip -DestinationPath ."
+.\zson-x86_64-windows-gnu\zson.exe --help
+```
+
+**From source** (requires [Zig 0.15](https://ziglang.org/download/)):
+
+```bash
 git clone https://github.com/melihbirim/zson
 cd zson
 zig build -Doptimize=ReleaseFast
-# binary at: .\zig-out\bin\zson.exe
-```
-
-**Cross-compile Windows from macOS / Linux:**
-
-```bash
-zig build windows -Doptimize=ReleaseFast
-# binary at: ./zig-out/bin/zson.exe
 ```
 
 ## Usage
@@ -70,6 +85,40 @@ Options:
   --output <fmt>      Output format: ndjson (default), json, csv
   --pretty            Pretty-print JSON output
   --help              Show this help
+```
+
+## Zig Library
+
+Use zson as a Zig module when you want parsed native objects instead of CLI output:
+
+```zig
+const std = @import("std");
+const zson = @import("zson");
+
+var result = try zson.queryNdjson(data, "{\"age\":{\"$gt\":30}}", allocator);
+defer result.deinit();
+
+for (result.items()) |obj| {
+    const name = obj.get("name").?.string;
+    std.debug.print("{s}\n", .{name});
+}
+```
+
+For files or JSON arrays, use `zson.queryFile` or `zson.queryData`.
+
+Run the full example:
+
+```bash
+zig build example-lib
+```
+
+## Benchmarks
+
+Compare zson with Zig `std.json` dynamic and typed parsing. If `jq` or `duckdb`
+are installed, the benchmark includes them as optional external comparisons.
+
+```bash
+zig build bench-json -Doptimize=ReleaseFast
 ```
 
 ### Examples

@@ -7,7 +7,7 @@ on:
 
 jobs:
   release:
-    name: Build & update Homebrew formula
+    name: Build release assets & update Homebrew formula
     runs-on: ubuntu-latest
     permissions:
       contents: write   # needed to create GitHub Release
@@ -15,13 +15,54 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Zig 0.15.2
+        uses: mlugg/setup-zig@v2
+        with:
+          version: "0.15.2"
+
+      - name: Build release archives
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist
+
+          build_archive() {
+            target="$1"
+            binary="$2"
+            archive="$3"
+
+            zig build -Dtarget="$target" -Doptimize=ReleaseFast
+
+            package_dir="dist/${archive%.*}"
+            package_dir="${package_dir%.tar}"
+            rm -rf "$package_dir"
+            mkdir -p "$package_dir"
+            cp "zig-out/bin/$binary" "$package_dir/"
+
+            if [[ "$archive" == *.zip ]]; then
+              (cd dist && zip -qr "$archive" "$(basename "$package_dir")")
+            else
+              tar -C dist -czf "dist/$archive" "$(basename "$package_dir")"
+            fi
+          }
+
+          build_archive "x86_64-linux-gnu" "zson" "zson-x86_64-linux-gnu.tar.gz"
+          build_archive "x86_64-macos" "zson" "zson-x86_64-macos.tar.gz"
+          build_archive "aarch64-macos" "zson" "zson-aarch64-macos.tar.gz"
+          build_archive "x86_64-windows-gnu" "zson.exe" "zson-x86_64-windows-gnu.zip"
+
+          (cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS.txt)
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "${{ github.ref_name }}" \
             --title "${{ github.ref_name }}" \
-            --generate-notes
+            --generate-notes \
+            dist/*.tar.gz \
+            dist/*.zip \
+            dist/SHA256SUMS.txt
 
       - name: Compute tarball SHA256
         id: sha

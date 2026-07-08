@@ -56,6 +56,7 @@ pub fn build(b: *std.Build) void {
     inline for (.{
         .{ "example-query", "examples/query.zig", "Run query example" },
         .{ "example-parallel", "examples/parallel.zig", "Run parallel example" },
+        .{ "example-lib", "examples/lib.zig", "Run Zig library API example" },
     }) |ex| {
         const ex_exe = b.addExecutable(.{
             .name = ex[0],
@@ -72,6 +73,21 @@ pub fn build(b: *std.Build) void {
         const run_ex = b.addRunArtifact(ex_exe);
         b.step(ex[0], ex[2]).dependOn(&run_ex.step);
     }
+
+    const bench_json_exe = b.addExecutable(.{
+        .name = "bench-json",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/json_libs.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zson", .module = mod },
+            },
+        }),
+    });
+    bench_json_exe.linkLibC();
+    const run_bench_json = b.addRunArtifact(bench_json_exe);
+    b.step("bench-json", "Compare zson with Zig std.json").dependOn(&run_bench_json.step);
 
     // Tests
     const mod_tests = b.addTest(.{ .root_module = mod });
